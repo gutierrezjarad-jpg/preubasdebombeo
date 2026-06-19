@@ -231,6 +231,64 @@ def add_warning(warnings: list[str], condition: bool, message: str):
         warnings.append(message)
 
 
+
+# =========================
+# Gráficos para PDF
+# =========================
+
+def make_line_chart_image(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    title: str,
+    x_label: str,
+    y_label: str,
+    invert_y: bool = False,
+) -> BytesIO | None:
+    """
+    Crea un gráfico simple en PNG para insertar en PDF.
+    Usa matplotlib para evitar depender de navegadores o conversiones externas.
+    """
+    if df is None or df.empty or not {x_col, y_col}.issubset(df.columns):
+        return None
+
+    data = df.copy()
+    data[x_col] = clean_numeric_series(data[x_col])
+    data[y_col] = clean_numeric_series(data[y_col])
+    data = data.dropna(subset=[x_col, y_col]).sort_values(x_col)
+
+    if len(data) < 2:
+        return None
+
+    fig, ax = plt.subplots(figsize=(7.2, 3.8))
+    ax.plot(data[x_col], data[y_col], marker="o", linewidth=1.6, markersize=3.5)
+    ax.set_title(title)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.grid(True, alpha=0.3)
+
+    if invert_y:
+        ax.invert_yaxis()
+
+    fig.tight_layout()
+    buffer = BytesIO()
+    fig.savefig(buffer, format="png", dpi=180)
+    plt.close(fig)
+    buffer.seek(0)
+    return buffer
+
+
+def chart_image_flowable(
+    image_buffer: BytesIO | None,
+    width_cm: float = 16.0,
+    height_cm: float = 8.0,
+):
+    if image_buffer is None:
+        return Paragraph("Gráfico no disponible: datos insuficientes.", getSampleStyleSheet()["Normal"])
+    image_buffer.seek(0)
+    return RLImage(image_buffer, width=width_cm * cm, height=height_cm * cm)
+
+
 # =========================
 # Generación de PDF
 # =========================
@@ -339,8 +397,51 @@ def make_pdf(
     ]
     story.append(make_table(calc_data, col_widths=[5.5 * cm, 10.5 * cm]))
 
+    # Gráficos técnicos
+    story.append(Paragraph("5. Gráficos técnicos", styles["Section"]))
+
+    pumping_chart = make_line_chart_image(
+        pumping_df,
+        x_col="Tiempo_min",
+        y_col="Nivel_m",
+        title="Nivel/profundidad vs tiempo de bombeo",
+        x_label="Tiempo (min)",
+        y_label="Nivel/profundidad (m)",
+        invert_y=True,
+    )
+    story.append(chart_image_flowable(pumping_chart))
+    story.append(Paragraph("Figura 1. Gráfico de prueba a caudal constante.", styles["Small"]))
+    story.append(Spacer(1, 0.4 * cm))
+
+    recovery_chart = make_line_chart_image(
+        recovery_df,
+        x_col="Tiempo_min",
+        y_col="Nivel_m",
+        title="Nivel/profundidad vs tiempo de recuperación",
+        x_label="Tiempo (min)",
+        y_label="Nivel/profundidad (m)",
+        invert_y=True,
+    )
+    story.append(chart_image_flowable(recovery_chart))
+    story.append(Paragraph("Figura 2. Gráfico de recuperación.", styles["Small"]))
+    story.append(Spacer(1, 0.4 * cm))
+
+    if recovery_df is not None and "Recuperacion_pct" in recovery_df.columns:
+        recovery_pct_chart = make_line_chart_image(
+            recovery_df,
+            x_col="Tiempo_min",
+            y_col="Recuperacion_pct",
+            title="Porcentaje de recuperación vs tiempo",
+            x_label="Tiempo (min)",
+            y_label="Recuperación (%)",
+            invert_y=False,
+        )
+        story.append(chart_image_flowable(recovery_pct_chart))
+        story.append(Paragraph("Figura 3. Porcentaje de recuperación acumulada.", styles["Small"]))
+        story.append(Spacer(1, 0.4 * cm))
+
     # Advertencias
-    story.append(Paragraph("5. Advertencias técnicas", styles["Section"]))
+    story.append(Paragraph("6. Advertencias técnicas", styles["Section"]))
     if warnings:
         for w in warnings:
             story.append(Paragraph(f"• {w}", styles["Normal"]))
@@ -348,15 +449,15 @@ def make_pdf(
         story.append(Paragraph("No se registran advertencias técnicas críticas con los datos ingresados.", styles["Normal"]))
 
     # Datos bombeo
-    story.append(Paragraph("6. Tabla de prueba de gasto constante", styles["Section"]))
+    story.append(Paragraph("7. Tabla de prueba de gasto constante", styles["Section"]))
     story.append(df_to_reportlab_table(pumping_df, max_rows=35))
 
     # Datos recuperación
-    story.append(Paragraph("7. Tabla de recuperación", styles["Section"]))
+    story.append(Paragraph("8. Tabla de recuperación", styles["Section"]))
     story.append(df_to_reportlab_table(recovery_df, max_rows=35))
 
     # Conclusiones
-    story.append(Paragraph("8. Conclusiones", styles["Section"]))
+    story.append(Paragraph("9. Conclusiones", styles["Section"]))
 
     tipo = capture.get("tipo", "")
     dur = calculations.get("duration_min")
@@ -658,15 +759,31 @@ with tabs[5]:
 
     with g1:
         if not valid_pumping.empty:
-            fig1 = px.line(valid_pumping, x="Tiempo_min", y="Nivel_m", markers=True, title="Nivel/profundidad vs tiempo de bombeo")
-            fig1.update_yaxes(autorange="reversed")
+            fig1 = px.line(
+                valid_pumping,
+                x="Tiempo_min",
+                y="Nivel_m",
+                markers=True,
+                title="Nivel/profundidad vs tiempo de bombeo",
+                labels={"Tiempo_min": "Tiempo (min)", "Nivel_m": "Nivel/profundidad (m)"}
+            )
+            fig1.update_yaxes(autorange="reversed", title_text="Nivel/profundidad (m)")
+            fig1.update_xaxes(title_text="Tiempo (min)")
             st.plotly_chart(fig1, use_container_width=True)
 
     with g2:
         rec_valid = recovery_with_pct.dropna(subset=["Tiempo_min", "Nivel_m"]) if not recovery_with_pct.empty else pd.DataFrame()
         if not rec_valid.empty:
-            fig2 = px.line(rec_valid, x="Tiempo_min", y="Nivel_m", markers=True, title="Nivel/profundidad vs tiempo de recuperación")
-            fig2.update_yaxes(autorange="reversed")
+            fig2 = px.line(
+                rec_valid,
+                x="Tiempo_min",
+                y="Nivel_m",
+                markers=True,
+                title="Nivel/profundidad vs tiempo de recuperación",
+                labels={"Tiempo_min": "Tiempo (min)", "Nivel_m": "Nivel/profundidad (m)"}
+            )
+            fig2.update_yaxes(autorange="reversed", title_text="Nivel/profundidad (m)")
+            fig2.update_xaxes(title_text="Tiempo (min)")
             st.plotly_chart(fig2, use_container_width=True)
 
     st.write("### Exportar")
