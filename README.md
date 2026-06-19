@@ -1,25 +1,21 @@
 # Sistema de Pruebas de Bombeo - Irrisal Consulting Ltda.
 
-Aplicación mínima funcional en Streamlit para registrar datos de pruebas de bombeo, calcular indicadores técnicos y exportar Excel/PDF.
+Versión 2: informe PDF profesional.
 
-## Funciones incluidas
+## Mejoras principales
 
-- Datos institucionales de Irrisal Consulting Ltda.
-- Registro de proyecto, captación y equipos.
-- Tabla editable de prueba de gasto constante.
-- Tabla editable de recuperación.
-- Cálculo de:
-  - duración
-  - abatimiento
-  - caudal promedio
-  - caudal específico
-  - volumen bombeado
-  - pendiente final en cm/h
-  - porcentaje de recuperación
-- Advertencias técnicas.
-- Exportación Excel.
-- Exportación PDF con ReportLab.
-- Dockerfile compatible con Cloud Run.
+- Portada más profesional.
+- Datos institucionales en portada y pie de página.
+- Sección de ubicación y habilitación.
+- Campos de cribas, tubería ciega, profundidad de bomba y tubería de extracción.
+- Estratigrafía editable.
+- Equipos y metodología.
+- Gráficos insertados en PDF.
+- Tabla de gasto constante.
+- Tabla de recuperación.
+- Conclusiones automáticas más cuidadosas.
+- Recomendaciones automáticas.
+- Exportación Excel ampliada.
 
 ## Ejecutar localmente
 
@@ -28,14 +24,6 @@ pip install -r requirements.txt
 streamlit run app/main.py
 ```
 
-## Ejecutar con Docker
-
-```bash
-docker build -t pruebas-bombeo .
-docker run -p 8080:8080 pruebas-bombeo
-```
-
 ## Nota técnica
 
-La aplicación no inventa ni rellena datos faltantes.  
-Si la prueba dura menos de 24 horas en pozo profundo, el informe advierte que no corresponde declarar cumplimiento formal de una prueba estándar de 24 h.
+El sistema no rellena datos faltantes ni presenta valores estimados como medidos.

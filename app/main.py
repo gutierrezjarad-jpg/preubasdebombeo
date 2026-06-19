@@ -4,31 +4,36 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import datetime
 from io import BytesIO
-import math
+import textwrap
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import streamlit as st
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    Image as RLImage, PageBreak
+    SimpleDocTemplate, BaseDocTemplate, PageTemplate, Frame,
+    Paragraph, Spacer, Table, TableStyle, Image as RLImage,
+    PageBreak, KeepTogether
 )
 
-# =========================
-# Configuración general
-# =========================
+# =============================================================================
+# CONFIGURACIÓN GENERAL
+# =============================================================================
 
 APP_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = APP_DIR / "assets"
 EXPORTS_DIR = APP_DIR / "exports"
+ASSETS_DIR.mkdir(exist_ok=True)
 EXPORTS_DIR.mkdir(exist_ok=True)
 
 LOGO_PATH = ASSETS_DIR / "logo_irrisal.jpg"
@@ -45,53 +50,69 @@ st.set_page_config(
     layout="wide"
 )
 
-
-# =========================
-# Funciones de cálculo
-# =========================
+# =============================================================================
+# UTILIDADES
+# =============================================================================
 
 def clean_numeric_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce")
 
 
-def calculate_drawdown(static_level: float, dynamic_level: float) -> float | None:
-    if static_level is None or dynamic_level is None:
-        return None
-    drawdown = dynamic_level - static_level
-    return drawdown if drawdown >= 0 else None
+def safe_text(value, default: str = "Dato no informado") -> str:
+    if value is None:
+        return default
+    if isinstance(value, float) and pd.isna(value):
+        return default
+    value = str(value).strip()
+    return value if value else default
 
 
-def calculate_specific_capacity(q_l_s: float, drawdown_m: float) -> float | None:
-    if drawdown_m is None or drawdown_m <= 0:
-        return None
-    return q_l_s / drawdown_m
+def fmt(value, suffix: str = "", decimals: int = 2, empty: str = "No evaluable") -> str:
+    if value is None:
+        return empty
+    try:
+        if pd.isna(value):
+            return empty
+    except Exception:
+        pass
+    if isinstance(value, (int, float, np.number)):
+        return f"{float(value):.{decimals}f}{suffix}"
+    return f"{value}{suffix}"
 
+
+def df_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for c in cols:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out
+
+
+def add_warning(warnings: list[str], condition: bool, message: str):
+    if condition:
+        warnings.append(message)
+
+
+# =============================================================================
+# CÁLCULOS
+# =============================================================================
 
 def calculate_flow_stats(df: pd.DataFrame) -> dict:
-    if df.empty or "Caudal_L_s" not in df:
-        return {
-            "q_mean": None, "q_min": None, "q_max": None,
-            "q_std": None, "q_var_pct": None, "is_constant": None
-        }
+    if df.empty or "Caudal_L_s" not in df.columns:
+        return {"q_mean": None, "q_min": None, "q_max": None, "q_std": None, "q_var_pct": None, "is_constant": None}
 
-    q = clean_numeric_series(df["Caudal_L_s"]).dropna()
+    q = pd.to_numeric(df["Caudal_L_s"], errors="coerce").dropna()
     if q.empty:
-        return {
-            "q_mean": None, "q_min": None, "q_max": None,
-            "q_std": None, "q_var_pct": None, "is_constant": None
-        }
+        return {"q_mean": None, "q_min": None, "q_max": None, "q_std": None, "q_var_pct": None, "is_constant": None}
 
     q_mean = float(q.mean())
     q_min = float(q.min())
     q_max = float(q.max())
     q_std = float(q.std(ddof=0)) if len(q) > 1 else 0.0
+    q_var_pct = ((q_max - q_min) / q_mean) * 100 if q_mean > 0 else None
 
-    if q_mean > 0:
-        q_var_pct = ((q_max - q_min) / q_mean) * 100
-    else:
-        q_var_pct = None
-
-    is_constant = q_var_pct is not None and q_var_pct <= 10  # rango max-min <=10% del promedio
+    # Criterio simple: diferencia max-min <= 10% del caudal medio.
+    is_constant = q_var_pct is not None and q_var_pct <= 10
 
     return {
         "q_mean": q_mean,
@@ -104,18 +125,11 @@ def calculate_flow_stats(df: pd.DataFrame) -> dict:
 
 
 def calculate_pumped_volume(df: pd.DataFrame) -> float | None:
-    """
-    Integra volumen bombeado usando intervalos:
-    volumen_m3 = sum(Q_prom_intervalo_L_s * delta_t_min * 60 / 1000)
-    """
     if df.empty or not {"Tiempo_min", "Caudal_L_s"}.issubset(df.columns):
         return None
 
-    data = df.copy()
-    data["Tiempo_min"] = clean_numeric_series(data["Tiempo_min"])
-    data["Caudal_L_s"] = clean_numeric_series(data["Caudal_L_s"])
-    data = data.dropna(subset=["Tiempo_min", "Caudal_L_s"]).sort_values("Tiempo_min")
-
+    data = df_numeric(df, ["Tiempo_min", "Caudal_L_s"]).dropna(subset=["Tiempo_min", "Caudal_L_s"])
+    data = data.sort_values("Tiempo_min")
     if len(data) < 2:
         return None
 
@@ -134,11 +148,6 @@ def calculate_pumped_volume(df: pd.DataFrame) -> float | None:
 
 
 def evaluate_stabilization(df: pd.DataFrame) -> dict:
-    """
-    Evalúa pendiente en los últimos 180 minutos disponibles.
-    Nivel_m se asume como profundidad medida desde punto de referencia.
-    Pendiente positiva = mayor profundidad = descenso del nivel del agua.
-    """
     result = {
         "evaluable": False,
         "slope_cm_h": None,
@@ -149,35 +158,29 @@ def evaluate_stabilization(df: pd.DataFrame) -> dict:
     if df.empty or not {"Tiempo_min", "Nivel_m"}.issubset(df.columns):
         return result
 
-    data = df.copy()
-    data["Tiempo_min"] = clean_numeric_series(data["Tiempo_min"])
-    data["Nivel_m"] = clean_numeric_series(data["Nivel_m"])
-    data = data.dropna(subset=["Tiempo_min", "Nivel_m"]).sort_values("Tiempo_min")
-
+    data = df_numeric(df, ["Tiempo_min", "Nivel_m"]).dropna(subset=["Tiempo_min", "Nivel_m"])
+    data = data.sort_values("Tiempo_min")
     if len(data) < 2:
         return result
 
-    t_max = data["Tiempo_min"].max()
-    t_min = data["Tiempo_min"].min()
-    duration = t_max - t_min
-
+    duration = float(data["Tiempo_min"].max() - data["Tiempo_min"].min())
     if duration < 180:
-        result["message"] = "No evaluable: se requieren al menos 180 minutos de datos."
+        result["message"] = "No evaluable: se requieren al menos 180 minutos de datos para evaluar tendencia de estabilización."
         return result
 
-    last = data[data["Tiempo_min"] >= t_max - 180].copy()
+    tmax = data["Tiempo_min"].max()
+    last = data[data["Tiempo_min"] >= tmax - 180].copy()
     if len(last) < 2:
         result["message"] = "No evaluable: no hay suficientes puntos en los últimos 180 minutos."
         return result
 
     x_h = last["Tiempo_min"].to_numpy() / 60.0
     y_m = last["Nivel_m"].to_numpy()
-
     slope_m_h = np.polyfit(x_h, y_m, 1)[0]
-    slope_cm_h = slope_m_h * 100
+    slope_cm_h = float(slope_m_h * 100)
 
     result["evaluable"] = True
-    result["slope_cm_h"] = float(slope_cm_h)
+    result["slope_cm_h"] = slope_cm_h
     result["meets"] = slope_cm_h <= 2
 
     if result["meets"]:
@@ -189,13 +192,12 @@ def evaluate_stabilization(df: pd.DataFrame) -> dict:
 
 
 def calculate_recovery(recovery_df: pd.DataFrame, static_level: float, final_dynamic_level: float) -> pd.DataFrame:
-    if recovery_df.empty or not {"Tiempo_min", "Nivel_m"}.issubset(recovery_df.columns):
-        return recovery_df
-
     data = recovery_df.copy()
-    data["Tiempo_min"] = clean_numeric_series(data["Tiempo_min"])
-    data["Nivel_m"] = clean_numeric_series(data["Nivel_m"])
+    if data.empty or not {"Tiempo_min", "Nivel_m"}.issubset(data.columns):
+        data["Recuperacion_pct"] = np.nan
+        return data
 
+    data = df_numeric(data, ["Tiempo_min", "Nivel_m"])
     denom = final_dynamic_level - static_level
     if denom <= 0:
         data["Recuperacion_pct"] = np.nan
@@ -206,38 +208,64 @@ def calculate_recovery(recovery_df: pd.DataFrame, static_level: float, final_dyn
     return data
 
 
-def time_to_recovery(data: pd.DataFrame, target_pct: float) -> float | None:
-    if data.empty or "Recuperacion_pct" not in data.columns:
+def time_to_recovery(df: pd.DataFrame, target_pct: float) -> float | None:
+    if df.empty or "Recuperacion_pct" not in df.columns:
         return None
-    valid = data.dropna(subset=["Tiempo_min", "Recuperacion_pct"])
+    valid = df_numeric(df, ["Tiempo_min", "Recuperacion_pct"]).dropna(subset=["Tiempo_min", "Recuperacion_pct"])
     reached = valid[valid["Recuperacion_pct"] >= target_pct]
     if reached.empty:
         return None
     return float(reached["Tiempo_min"].iloc[0])
 
 
-def format_value(value, suffix="", decimals=2):
-    if value is None:
-        return "No evaluable"
-    try:
-        if pd.isna(value):
-            return "No evaluable"
-    except Exception:
-        pass
-    if isinstance(value, (float, int, np.number)):
-        return f"{value:.{decimals}f}{suffix}"
-    return str(value)
+def build_calculations(pumping_df: pd.DataFrame, recovery_df: pd.DataFrame, static_level: float) -> tuple[dict, pd.DataFrame]:
+    pumping = df_numeric(pumping_df, ["Tiempo_min", "Nivel_m", "Caudal_L_s"])
+    pumping_valid = pumping.dropna(subset=["Tiempo_min", "Nivel_m"]).sort_values("Tiempo_min")
+
+    duration_min = None
+    final_dynamic = None
+    drawdown = None
+
+    if not pumping_valid.empty:
+        duration_min = float(pumping_valid["Tiempo_min"].max() - pumping_valid["Tiempo_min"].min())
+        final_dynamic = float(pumping_valid["Nivel_m"].iloc[-1])
+        drawdown = final_dynamic - static_level if final_dynamic >= static_level else None
+
+    flow_stats = calculate_flow_stats(pumping)
+    specific_capacity = flow_stats["q_mean"] / drawdown if drawdown and drawdown > 0 and flow_stats["q_mean"] is not None else None
+    volume_m3 = calculate_pumped_volume(pumping)
+    stabilization = evaluate_stabilization(pumping)
+
+    recovery_with_pct = calculate_recovery(recovery_df, static_level, final_dynamic) if final_dynamic is not None else recovery_df.copy()
+    if "Recuperacion_pct" not in recovery_with_pct.columns:
+        recovery_with_pct["Recuperacion_pct"] = np.nan
+
+    rec_valid = pd.to_numeric(recovery_with_pct["Recuperacion_pct"], errors="coerce").dropna()
+    recovery_max = float(rec_valid.max()) if not rec_valid.empty else None
+
+    calculations = {
+        **flow_stats,
+        "duration_min": duration_min,
+        "final_dynamic": final_dynamic,
+        "drawdown": drawdown,
+        "specific_capacity": specific_capacity,
+        "volume_m3": volume_m3,
+        "stabilization_evaluable": stabilization["evaluable"],
+        "stabilization_meets": stabilization["meets"],
+        "slope_cm_h": stabilization["slope_cm_h"],
+        "stabilization_message": stabilization["message"],
+        "recovery_max": recovery_max,
+        "t75": time_to_recovery(recovery_with_pct, 75),
+        "t90": time_to_recovery(recovery_with_pct, 90),
+        "t100": time_to_recovery(recovery_with_pct, 100),
+    }
+
+    return calculations, recovery_with_pct
 
 
-def add_warning(warnings: list[str], condition: bool, message: str):
-    if condition:
-        warnings.append(message)
-
-
-
-# =========================
-# Gráficos para PDF
-# =========================
+# =============================================================================
+# GRÁFICOS
+# =============================================================================
 
 def make_line_chart_image(
     df: pd.DataFrame,
@@ -248,27 +276,19 @@ def make_line_chart_image(
     y_label: str,
     invert_y: bool = False,
 ) -> BytesIO | None:
-    """
-    Crea un gráfico simple en PNG para insertar en PDF.
-    Usa matplotlib para evitar depender de navegadores o conversiones externas.
-    """
     if df is None or df.empty or not {x_col, y_col}.issubset(df.columns):
         return None
 
-    data = df.copy()
-    data[x_col] = clean_numeric_series(data[x_col])
-    data[y_col] = clean_numeric_series(data[y_col])
-    data = data.dropna(subset=[x_col, y_col]).sort_values(x_col)
-
+    data = df_numeric(df, [x_col, y_col]).dropna(subset=[x_col, y_col]).sort_values(x_col)
     if len(data) < 2:
         return None
 
-    fig, ax = plt.subplots(figsize=(7.2, 3.8))
-    ax.plot(data[x_col], data[y_col], marker="o", linewidth=1.6, markersize=3.5)
-    ax.set_title(title)
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.grid(True, alpha=0.3)
+    fig, ax = plt.subplots(figsize=(8.0, 4.1))
+    ax.plot(data[x_col], data[y_col], marker="o", linewidth=1.5, markersize=3.4)
+    ax.set_title(title, fontsize=11)
+    ax.set_xlabel(x_label, fontsize=9)
+    ax.set_ylabel(y_label, fontsize=9)
+    ax.grid(True, alpha=0.32)
 
     if invert_y:
         ax.invert_yaxis()
@@ -281,254 +301,586 @@ def make_line_chart_image(
     return buffer
 
 
-def chart_image_flowable(
-    image_buffer: BytesIO | None,
-    width_cm: float = 16.0,
-    height_cm: float = 8.0,
-):
+def image_flowable(image_buffer: BytesIO | None, width_cm: float = 16.5, height_cm: float = 8.4):
     if image_buffer is None:
-        return Paragraph("Gráfico no disponible: datos insuficientes.", getSampleStyleSheet()["Normal"])
+        return Paragraph("Gráfico no disponible: datos insuficientes.", get_styles()["Body"])
     image_buffer.seek(0)
     return RLImage(image_buffer, width=width_cm * cm, height=height_cm * cm)
 
 
-# =========================
-# Generación de PDF
-# =========================
+# =============================================================================
+# PDF: ESTILOS Y COMPONENTES
+# =============================================================================
+
+def get_styles():
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="CoverTitle", parent=styles["Title"], fontSize=18, leading=22,
+        alignment=TA_CENTER, textColor=colors.HexColor("#006b2e"), spaceAfter=14
+    ))
+    styles.add(ParagraphStyle(
+        name="CoverSubtitle", parent=styles["Normal"], fontSize=12, leading=15,
+        alignment=TA_CENTER, spaceAfter=6
+    ))
+    styles.add(ParagraphStyle(
+        name="SectionTitle", parent=styles["Heading2"], fontSize=12.5, leading=15,
+        textColor=colors.HexColor("#006b2e"), spaceBefore=10, spaceAfter=7
+    ))
+    styles.add(ParagraphStyle(
+        name="Body", parent=styles["Normal"], fontSize=8.7, leading=11.2, alignment=TA_LEFT
+    ))
+    styles.add(ParagraphStyle(
+        name="Small", parent=styles["Normal"], fontSize=7.2, leading=9.2
+    ))
+    styles.add(ParagraphStyle(
+        name="FigureCaption", parent=styles["Normal"], fontSize=7.5, leading=9.4,
+        alignment=TA_CENTER, textColor=colors.HexColor("#555555"), spaceAfter=6
+    ))
+    return styles
+
+
+def report_header_footer(canvas, doc, company: dict):
+    canvas.saveState()
+    width, height = A4
+
+    # Header line
+    canvas.setStrokeColor(colors.HexColor("#006b2e"))
+    canvas.setLineWidth(0.6)
+    canvas.line(1.4 * cm, height - 1.15 * cm, width - 1.4 * cm, height - 1.15 * cm)
+
+    canvas.setFont("Helvetica-Bold", 7.2)
+    canvas.setFillColor(colors.HexColor("#006b2e"))
+    canvas.drawString(1.5 * cm, height - 0.88 * cm, safe_text(company.get("empresa"), ""))
+
+    # Footer
+    canvas.setStrokeColor(colors.HexColor("#bbbbbb"))
+    canvas.setLineWidth(0.35)
+    canvas.line(1.4 * cm, 1.05 * cm, width - 1.4 * cm, 1.05 * cm)
+
+    canvas.setFont("Helvetica", 6.7)
+    canvas.setFillColor(colors.HexColor("#444444"))
+    footer = f"{safe_text(company.get('direccion'), '')} | {safe_text(company.get('celular'), '')} | {safe_text(company.get('correo'), '')}"
+    canvas.drawString(1.5 * cm, 0.72 * cm, footer[:128])
+    canvas.drawRightString(width - 1.5 * cm, 0.72 * cm, f"Página {doc.page}")
+
+    canvas.restoreState()
+
+
+def make_table(data, col_widths=None, header=False, font_size=7.2, first_col_bold=True):
+    wrapped = []
+    styles = get_styles()
+    for row in data:
+        wrapped.append([Paragraph(safe_text(cell, ""), styles["Small"]) for cell in row])
+
+    table = Table(wrapped, colWidths=col_widths)
+    style = [
+        ("GRID", (0, 0), (-1, -1), 0.28, colors.HexColor("#999999")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("FONTSIZE", (0, 0), (-1, -1), font_size),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]
+    if first_col_bold:
+        style += [
+            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#edf7ef")),
+        ]
+    if header:
+        style += [
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d9ead3")),
+        ]
+    table.setStyle(TableStyle(style))
+    return table
+
+
+def df_to_pdf_table(df: pd.DataFrame, max_rows: int = 55, font_size: float = 6.0):
+    styles = get_styles()
+    if df is None or df.empty:
+        return Paragraph("Sin datos ingresados.", styles["Body"])
+
+    show = df.copy().head(max_rows).fillna("")
+    data = [list(show.columns)] + show.astype(str).values.tolist()
+
+    # Ancho flexible para A4 normal
+    ncols = max(1, len(data[0]))
+    col_width = min(16.5 / ncols, 4.5) * cm
+
+    table = Table(data, colWidths=[col_width] * ncols, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#999999")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d9ead3")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), font_size),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return table
+
+
+def uploaded_image_flowable(uploaded_file, width_cm: float = 15.5, height_cm: float = 8.5):
+    if uploaded_file is None:
+        return None
+    try:
+        data = uploaded_file.getvalue()
+        return RLImage(BytesIO(data), width=width_cm * cm, height=height_cm * cm)
+    except Exception:
+        return None
+
+
+def make_simple_well_scheme(capture: dict):
+    """
+    Esquema constructivo simple generado automáticamente.
+    No inventa cribas ni profundidad de bomba si esos datos no fueron ingresados.
+    Si falta profundidad total, no genera esquema.
+    """
+    styles = get_styles()
+
+    total_depth = capture.get("profundidad_total")
+    static_level = capture.get("nivel_estatico")
+    pump_depth = capture.get("profundidad_bomba")
+    screen_from = capture.get("criba_desde")
+    screen_to = capture.get("criba_hasta")
+
+    try:
+        total_depth = float(total_depth)
+        if total_depth <= 0:
+            return None
+    except Exception:
+        return None
+
+    try:
+        static_level = float(static_level)
+    except Exception:
+        static_level = None
+
+    try:
+        pump_depth = float(pump_depth)
+        has_pump = pump_depth > 0
+    except Exception:
+        pump_depth = None
+        has_pump = False
+
+    try:
+        screen_from = float(screen_from)
+        screen_to = float(screen_to)
+        has_screen = screen_from > 0 and screen_to > screen_from
+    except Exception:
+        screen_from = None
+        screen_to = None
+        has_screen = False
+
+    fig, ax = plt.subplots(figsize=(3.2, 7.0))
+    ax.set_xlim(0, 10)
+    ax.set_ylim(total_depth + 2, -2)
+    ax.axis("off")
+
+    # Terreno
+    ax.plot([0.5, 9.5], [0, 0], color="saddlebrown", linewidth=2)
+    ax.text(6.2, -0.35, "Nivel de terreno", fontsize=7)
+
+    # Tubería
+    ax.plot([4, 4], [0, total_depth], color="black", linewidth=2)
+    ax.plot([6, 6], [0, total_depth], color="black", linewidth=2)
+    ax.plot([4, 6], [total_depth, total_depth], color="black", linewidth=2)
+
+    # Nivel estático
+    if static_level is not None:
+        ax.plot([3.7, 6.3], [static_level, static_level], color="blue", linewidth=1.8)
+        ax.text(6.5, static_level, f"Nivel estático {static_level:.2f} m", fontsize=7, va="center")
+    else:
+        ax.text(6.5, total_depth * 0.2, "Nivel estático: no informado", fontsize=7, va="center")
+
+    # Cribas / tramo ranurado
+    if has_screen:
+        ax.fill_between([4, 6], screen_from, screen_to, color="#d9ead3", alpha=0.75)
+        for y in np.linspace(screen_from, screen_to, 12):
+            ax.plot([4.05, 5.95], [y, y], color="gray", linewidth=0.7)
+        ax.text(6.5, (screen_from + screen_to) / 2, f"Cribas {screen_from:.1f}-{screen_to:.1f} m", fontsize=7, va="center")
+    else:
+        ax.text(6.5, total_depth * 0.65, "Cribas/tramo filtrante: no informado", fontsize=7, va="center")
+
+    # Bomba
+    if has_pump:
+        ax.scatter([5], [pump_depth], marker="s", s=42, color="black")
+        ax.text(6.5, pump_depth, f"Bomba {pump_depth:.1f} m", fontsize=7, va="center")
+    else:
+        ax.text(6.5, total_depth * 0.82, "Profundidad bomba: no informada", fontsize=7, va="center")
+
+    ax.text(6.5, total_depth, f"Profundidad total {total_depth:.1f} m", fontsize=7, va="center")
+    ax.set_title("Esquema constructivo referencial", fontsize=9)
+
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+# =============================================================================
+# GENERACIÓN PDF
+# =============================================================================
+
+def generate_conclusions(capture: dict, calculations: dict, warnings: list[str], test_mode: str) -> list[str]:
+    tipo = safe_text(capture.get("tipo"), "")
+    duration = calculations.get("duration_min")
+    q_mean = calculations.get("q_mean")
+    stab_meets = calculations.get("stabilization_meets")
+    rec_max = calculations.get("recovery_max")
+
+    conclusions = []
+
+    if q_mean is not None:
+        conclusions.append(
+            f"Durante el periodo medido, la prueba se desarrolló con un caudal promedio de {fmt(q_mean, ' L/s')}."
+        )
+
+    if calculations.get("drawdown") is not None:
+        conclusions.append(
+            f"El abatimiento final calculado fue de {fmt(calculations.get('drawdown'), ' m')}, con un caudal específico de {fmt(calculations.get('specific_capacity'), ' L/s/m')}."
+        )
+
+    if calculations.get("stabilization_evaluable"):
+        if stab_meets:
+            conclusions.append(
+                "La captación presenta estabilización o franca tendencia a estabilización bajo el criterio de variación ≤ 2 cm/h en los últimos 180 minutos evaluados."
+            )
+        else:
+            conclusions.append(
+                "La captación no presenta estabilización bajo el criterio de variación ≤ 2 cm/h en los últimos 180 minutos evaluados."
+            )
+    else:
+        conclusions.append(
+            "La estabilización no es evaluable con los datos disponibles."
+        )
+
+    if rec_max is not None:
+        conclusions.append(
+            f"La recuperación máxima observada alcanzó {fmt(rec_max, ' %')}. La interpretación de recuperación debe considerar la duración real del seguimiento posterior al bombeo."
+        )
+
+    if tipo == "Pozo profundo" and duration is not None and duration < 1440:
+        conclusions.append(
+            "La prueba corresponde a un ensayo de duración menor a 24 horas para pozo profundo. Sus resultados permiten una evaluación operativa del comportamiento de la captación durante el periodo medido, pero no reemplazan una prueba estándar de 24 horas cuando esta sea exigida."
+        )
+
+    if "abreviado" in test_mode.lower() or (duration is not None and duration <= 180):
+        conclusions.append(
+            "El ensayo abreviado debe interpretarse como antecedente técnico preliminar y sus conclusiones deben restringirse al periodo efectivamente medido."
+        )
+
+    conclusions.append(
+        "El informe se basa exclusivamente en datos ingresados o importados por el usuario. El sistema no rellena mediciones faltantes ni presenta datos estimados como medidos."
+    )
+
+    return conclusions
+
+
+def generate_recommendations(capture: dict, calculations: dict, warnings: list[str]) -> list[str]:
+    recs = []
+    tipo = safe_text(capture.get("tipo"), "")
+    rec_max = calculations.get("recovery_max")
+
+    if not calculations.get("stabilization_evaluable"):
+        recs.append("Registrar al menos 180 minutos de mediciones continuas para evaluar tendencia de estabilización.")
+    elif calculations.get("stabilization_meets"):
+        recs.append("Mantener como referencia el caudal ensayado, siempre que las condiciones de operación y recuperación se mantengan similares.")
+    else:
+        recs.append("Evaluar una reducción del caudal de operación o repetir la prueba con mayor duración para definir un caudal más conservador.")
+
+    if rec_max is None or rec_max < 75:
+        recs.append("Extender la medición de recuperación hasta alcanzar al menos 75% de recuperación, idealmente hasta recuperación completa o estabilización clara.")
+
+    if tipo == "Puntera":
+        recs.append("Para punteras, habilitar piezómetro de control para medición de niveles, evitando interpretar niveles directamente desde la tubería de extracción.")
+
+    if calculations.get("is_constant") is False:
+        recs.append("Mejorar el control del caudal durante la prueba para asegurar condiciones de gasto constante.")
+
+    recs.append("Conservar respaldo de planillas, fotografías, ubicación y equipos utilizados como anexos del expediente técnico.")
+
+    return recs
+
 
 def make_pdf(
     company: dict,
     project: dict,
     capture: dict,
+    stratigraphy_df: pd.DataFrame,
     equipment: dict,
+    methodology: dict,
     pumping_df: pd.DataFrame,
     recovery_df: pd.DataFrame,
     calculations: dict,
     warnings: list[str],
+    location_image=None,
+    scheme_image=None,
 ) -> bytes:
     buffer = BytesIO()
+    styles = get_styles()
+
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
         rightMargin=1.5 * cm,
         leftMargin=1.5 * cm,
-        topMargin=1.4 * cm,
-        bottomMargin=1.4 * cm,
+        topMargin=1.65 * cm,
+        bottomMargin=1.35 * cm,
     )
 
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="Small", fontSize=8, leading=10))
-    styles.add(ParagraphStyle(name="TitleCenter", fontSize=18, leading=22, alignment=1, spaceAfter=14))
-    styles.add(ParagraphStyle(name="Section", fontSize=13, leading=16, spaceBefore=10, spaceAfter=6, textColor=colors.HexColor("#006b2e")))
+    def later_pages(canvas, doc_obj):
+        report_header_footer(canvas, doc_obj, company)
 
     story = []
 
+    # -------------------------------------------------------------------------
+    # PORTADA
+    # -------------------------------------------------------------------------
     if LOGO_PATH.exists():
         try:
-            story.append(RLImage(str(LOGO_PATH), width=6.5 * cm, height=3.8 * cm))
-            story.append(Spacer(1, 0.2 * cm))
+            story.append(RLImage(str(LOGO_PATH), width=7.0 * cm, height=4.0 * cm))
+            story.append(Spacer(1, 0.3 * cm))
         except Exception:
             pass
 
-    story.append(Paragraph("INFORME DE PRUEBA DE BOMBEO", styles["TitleCenter"]))
-    story.append(Paragraph(f"<b>{company.get('empresa', 'Dato no informado')}</b>", styles["Normal"]))
-    story.append(Paragraph(company.get("direccion", "Dato no informado"), styles["Small"]))
-    story.append(Paragraph(f"Celular: {company.get('celular', 'Dato no informado')} | Correo: {company.get('correo', 'Dato no informado')}", styles["Small"]))
-    story.append(Spacer(1, 0.8 * cm))
+    story.append(Paragraph("INFORME DE PRUEBA DE BOMBEO", styles["CoverTitle"]))
+    story.append(Paragraph(f"<b>{safe_text(project.get('identificacion'), 'Captación subterránea')}</b>", styles["CoverSubtitle"]))
+    story.append(Spacer(1, 0.5 * cm))
 
-    portada_data = [
-        ["Proyecto", project.get("nombre_proyecto") or "Dato no informado"],
-        ["Cliente", project.get("cliente") or "Dato no informado"],
-        ["Sector", project.get("sector") or "Dato no informado"],
-        ["Comuna", project.get("comuna") or "Dato no informado"],
-        ["Región", project.get("region") or "Dato no informado"],
-        ["Fecha informe", datetime.now().strftime("%d-%m-%Y")],
+    cover_data = [
+        ["Cliente / Beneficiario", project.get("cliente")],
+        ["Proyecto", project.get("nombre_proyecto")],
+        ["Sector / Predio", project.get("sector")],
+        ["Comuna", project.get("comuna")],
+        ["Región", project.get("region")],
+        ["Fecha de prueba", methodology.get("fecha_prueba")],
+        ["Fecha de emisión", datetime.now().strftime("%d-%m-%Y")],
+        ["Consultor responsable", project.get("consultor")],
     ]
-    story.append(make_table(portada_data, col_widths=[4 * cm, 12 * cm]))
+    story.append(make_table(cover_data, col_widths=[5.2 * cm, 11.2 * cm]))
+    story.append(Spacer(1, 1.0 * cm))
+    story.append(Paragraph(f"<b>{safe_text(company.get('empresa'))}</b>", styles["CoverSubtitle"]))
+    story.append(Paragraph(safe_text(company.get("direccion")), styles["CoverSubtitle"]))
+    story.append(Paragraph(f"Celular: {safe_text(company.get('celular'))} | Correo: {safe_text(company.get('correo'))}", styles["CoverSubtitle"]))
     story.append(PageBreak())
 
-    # Antecedentes
-    story.append(Paragraph("1. Antecedentes generales", styles["Section"]))
-    story.append(Paragraph(
-        "El presente informe resume los antecedentes de la captación, la prueba de gasto constante, "
-        "la recuperación posterior y los cálculos técnicos derivados de los datos ingresados por el usuario.",
-        styles["Normal"]
-    ))
-    story.append(Spacer(1, 0.2 * cm))
+    # -------------------------------------------------------------------------
+    # 1. INTRODUCCIÓN
+    # -------------------------------------------------------------------------
+    story.append(Paragraph("1. Introducción", styles["SectionTitle"]))
+    intro = (
+        "El presente informe resume los antecedentes de la captación, su habilitación, "
+        "la metodología de prueba de bombeo, los registros de nivel y caudal, la recuperación "
+        "posterior y los resultados calculados a partir de los datos ingresados. "
+        "La interpretación se limita al periodo efectivamente medido y a la calidad de los datos disponibles."
+    )
+    story.append(Paragraph(intro, styles["Body"]))
 
-    # Captación
-    story.append(Paragraph("2. Habilitación y ubicación de la captación", styles["Section"]))
+    # -------------------------------------------------------------------------
+    # 2. ANTECEDENTES GENERALES
+    # -------------------------------------------------------------------------
+    story.append(Paragraph("2. Antecedentes generales", styles["SectionTitle"]))
+    general_data = [
+        ["Cliente", project.get("cliente")],
+        ["Proyecto", project.get("nombre_proyecto")],
+        ["Identificación de captación", project.get("identificacion")],
+        ["Sector / Predio", project.get("sector")],
+        ["Comuna", project.get("comuna")],
+        ["Región", project.get("region")],
+        ["Consultor responsable", project.get("consultor")],
+        ["Observaciones generales", project.get("observaciones")],
+    ]
+    story.append(make_table(general_data, col_widths=[5.2 * cm, 11.2 * cm]))
+
+    # -------------------------------------------------------------------------
+    # 3. UBICACIÓN Y HABILITACIÓN
+    # -------------------------------------------------------------------------
+    story.append(Paragraph("3. Ubicación y habilitación de la captación", styles["SectionTitle"]))
     cap_data = [
-        ["Tipo de captación", capture.get("tipo") or "Dato no informado"],
-        ["Coordenada UTM Norte", capture.get("utm_norte") or "Dato no informado"],
-        ["Coordenada UTM Este", capture.get("utm_este") or "Dato no informado"],
-        ["Datum / Huso", f"{capture.get('datum') or 'Dato no informado'} / {capture.get('huso') or 'Dato no informado'}"],
-        ["Profundidad total (m)", capture.get("profundidad_total") or "Dato no informado"],
-        ["Diámetro", capture.get("diametro") or "Dato no informado"],
-        ["Nivel estático inicial (m)", capture.get("nivel_estatico") or "Dato no informado"],
-        ["Observaciones", capture.get("observaciones") or "Dato no informado"],
+        ["Tipo de captación", capture.get("tipo")],
+        ["Coordenada UTM Norte", capture.get("utm_norte")],
+        ["Coordenada UTM Este", capture.get("utm_este")],
+        ["Datum / Huso", f"{safe_text(capture.get('datum'))} / {safe_text(capture.get('huso'))}"],
+        ["Condición", capture.get("condicion")],
+        ["Profundidad total", fmt(capture.get("profundidad_total"), " m")],
+        ["Diámetro perforación", capture.get("diametro_perforacion")],
+        ["Diámetro entubación", capture.get("diametro_entubacion")],
+        ["Material / espesor tubería", capture.get("material_tuberia")],
+        ["Altura sobre terreno", capture.get("altura_sobre_terreno")],
+        ["Nivel estático inicial", fmt(capture.get("nivel_estatico"), " m")],
+        ["Cribas / ranuras", (f"Desde {capture.get('criba_desde')} m hasta {capture.get('criba_hasta')} m" if capture.get("criba_desde") and capture.get("criba_hasta") else "No informado")],
+        ["Tubería ciega", capture.get("tuberia_ciega")],
+        ["Profundidad de bomba", fmt(capture.get("profundidad_bomba"), " m")],
+        ["Tubería extracción/succión", capture.get("tuberia_extraccion")],
+        ["Observaciones", capture.get("observaciones")],
     ]
-    story.append(make_table(cap_data, col_widths=[5 * cm, 11 * cm]))
+    story.append(make_table(cap_data, col_widths=[5.2 * cm, 11.2 * cm]))
 
-    # Equipos
-    story.append(Paragraph("3. Equipos utilizados", styles["Section"]))
+    if location_image is not None:
+        loc_flow = uploaded_image_flowable(location_image, width_cm=15.5, height_cm=8.0)
+        if loc_flow:
+            story.append(Spacer(1, 0.35 * cm))
+            story.append(loc_flow)
+            story.append(Paragraph("Figura 1. Croquis o imagen de ubicación de la captación.", styles["FigureCaption"]))
+
+    story.append(Paragraph("4. Esquema constructivo", styles["SectionTitle"]))
+    scheme_flow = uploaded_image_flowable(scheme_image, width_cm=9.0, height_cm=12.0) if scheme_image else None
+    if scheme_flow is None:
+        scheme_buf = make_simple_well_scheme(capture)
+        if scheme_buf is not None:
+            scheme_flow = image_flowable(scheme_buf, width_cm=8.0, height_cm=12.0)
+            story.append(Paragraph("Esquema referencial generado automáticamente a partir de los datos ingresados. No reemplaza plano constructivo real.", styles["Small"]))
+        else:
+            scheme_flow = Paragraph("Esquema constructivo no generado: falta profundidad total o datos mínimos de captación.", styles["Body"])
+    story.append(scheme_flow)
+    story.append(Paragraph("Figura 2. Esquema constructivo referencial de la captación.", styles["FigureCaption"]))
+
+    # -------------------------------------------------------------------------
+    # 5. ESTRATIGRAFÍA
+    # -------------------------------------------------------------------------
+    story.append(Paragraph("5. Estratigrafía", styles["SectionTitle"]))
+    story.append(Paragraph(
+        "La estratigrafía ingresada se presenta como antecedente descriptivo del material perforado o reconocido durante la habilitación.",
+        styles["Body"]
+    ))
+    story.append(df_to_pdf_table(stratigraphy_df, max_rows=35, font_size=6.4))
+
+    # -------------------------------------------------------------------------
+    # 6. EQUIPOS Y METODOLOGÍA
+    # -------------------------------------------------------------------------
+    story.append(Paragraph("6. Equipos utilizados", styles["SectionTitle"]))
     eq_data = [
-        ["Bomba", equipment.get("bomba") or "Dato no informado"],
-        ["Potencia", equipment.get("potencia") or "Dato no informado"],
-        ["Medidor de caudal", equipment.get("medidor_caudal") or "Dato no informado"],
-        ["Instrumento de nivel", equipment.get("instrumento_nivel") or "Dato no informado"],
-        ["Observaciones", equipment.get("observaciones") or "Dato no informado"],
+        ["Bomba", equipment.get("bomba")],
+        ["Potencia", equipment.get("potencia")],
+        ["Tubería de extracción", capture.get("tuberia_extraccion")],
+        ["Medidor de caudal", equipment.get("medidor_caudal")],
+        ["Instrumento de nivel", equipment.get("instrumento_nivel")],
+        ["Generador", equipment.get("generador")],
+        ["Observaciones", equipment.get("observaciones")],
     ]
-    story.append(make_table(eq_data, col_widths=[5 * cm, 11 * cm]))
+    story.append(make_table(eq_data, col_widths=[5.2 * cm, 11.2 * cm]))
 
-    # Resultados
-    story.append(Paragraph("4. Resultados calculados", styles["Section"]))
-    calc_data = [
-        ["Caudal promedio", format_value(calculations.get("q_mean"), " L/s")],
-        ["Caudal mínimo", format_value(calculations.get("q_min"), " L/s")],
-        ["Caudal máximo", format_value(calculations.get("q_max"), " L/s")],
-        ["Variación relativa de caudal", format_value(calculations.get("q_var_pct"), " %")],
-        ["Abatimiento final", format_value(calculations.get("drawdown"), " m")],
-        ["Caudal específico", format_value(calculations.get("specific_capacity"), " L/s/m")],
-        ["Volumen bombeado", format_value(calculations.get("volume_m3"), " m³")],
-        ["Pendiente final", format_value(calculations.get("slope_cm_h"), " cm/h")],
-        ["Evaluación estabilización", calculations.get("stabilization_message", "No evaluable")],
-        ["Recuperación máxima", format_value(calculations.get("recovery_max"), " %")],
-        ["Tiempo a 75% recuperación", format_value(calculations.get("t75"), " min")],
-        ["Tiempo a 90% recuperación", format_value(calculations.get("t90"), " min")],
-        ["Tiempo a 100% recuperación", format_value(calculations.get("t100"), " min")],
+    story.append(Paragraph("7. Metodología de prueba de bombeo", styles["SectionTitle"]))
+    met_data = [
+        ["Modo de prueba", methodology.get("modo_prueba")],
+        ["Fecha de prueba", methodology.get("fecha_prueba")],
+        ["Hora inicio bombeo", methodology.get("hora_inicio")],
+        ["Hora término bombeo", methodology.get("hora_termino")],
+        ["Duración registrada", fmt(calculations.get("duration_min"), " min", decimals=0)],
+        ["Caudal objetivo", methodology.get("caudal_objetivo")],
+        ["Método de medición de caudal", methodology.get("metodo_caudal")],
+        ["Método de medición de niveles", methodology.get("metodo_nivel")],
+        ["Frecuencia de medición", methodology.get("frecuencia")],
+        ["Observaciones metodológicas", methodology.get("observaciones")],
     ]
-    story.append(make_table(calc_data, col_widths=[5.5 * cm, 10.5 * cm]))
+    story.append(make_table(met_data, col_widths=[5.2 * cm, 11.2 * cm]))
 
-    # Gráficos técnicos
-    story.append(Paragraph("5. Gráficos técnicos", styles["Section"]))
+    # -------------------------------------------------------------------------
+    # 8. RESULTADOS
+    # -------------------------------------------------------------------------
+    story.append(Paragraph("8. Resultados calculados", styles["SectionTitle"]))
+    results_data = [
+        ["Caudal promedio", fmt(calculations.get("q_mean"), " L/s")],
+        ["Caudal mínimo", fmt(calculations.get("q_min"), " L/s")],
+        ["Caudal máximo", fmt(calculations.get("q_max"), " L/s")],
+        ["Variación relativa de caudal", fmt(calculations.get("q_var_pct"), " %")],
+        ["Nivel estático inicial", fmt(capture.get("nivel_estatico"), " m")],
+        ["Nivel dinámico final", fmt(calculations.get("final_dynamic"), " m")],
+        ["Abatimiento final", fmt(calculations.get("drawdown"), " m")],
+        ["Caudal específico", fmt(calculations.get("specific_capacity"), " L/s/m")],
+        ["Volumen bombeado", fmt(calculations.get("volume_m3"), " m³")],
+        ["Pendiente final", fmt(calculations.get("slope_cm_h"), " cm/h")],
+        ["Evaluación estabilización", calculations.get("stabilization_message")],
+        ["Recuperación máxima", fmt(calculations.get("recovery_max"), " %")],
+        ["Tiempo a 75% recuperación", fmt(calculations.get("t75"), " min", decimals=0)],
+        ["Tiempo a 90% recuperación", fmt(calculations.get("t90"), " min", decimals=0)],
+        ["Tiempo a 100% recuperación", fmt(calculations.get("t100"), " min", decimals=0)],
+    ]
+    story.append(make_table(results_data, col_widths=[5.2 * cm, 11.2 * cm]))
 
-    pumping_chart = make_line_chart_image(
-        pumping_df,
-        x_col="Tiempo_min",
-        y_col="Nivel_m",
-        title="Nivel/profundidad vs tiempo de bombeo",
-        x_label="Tiempo (min)",
-        y_label="Nivel/profundidad (m)",
-        invert_y=True,
+    # -------------------------------------------------------------------------
+    # 9. GRÁFICOS
+    # -------------------------------------------------------------------------
+    story.append(Paragraph("9. Gráficos", styles["SectionTitle"]))
+
+    pump_chart = make_line_chart_image(
+        pumping_df, "Tiempo_min", "Nivel_m",
+        "Prueba de gasto constante",
+        "Tiempo (min)", "Nivel/profundidad (m)",
+        invert_y=True
     )
-    story.append(chart_image_flowable(pumping_chart))
-    story.append(Paragraph("Figura 1. Gráfico de prueba a caudal constante.", styles["Small"]))
-    story.append(Spacer(1, 0.4 * cm))
+    story.append(image_flowable(pump_chart))
+    story.append(Paragraph("Figura 3. Gráfico de prueba a caudal constante.", styles["FigureCaption"]))
 
-    recovery_chart = make_line_chart_image(
-        recovery_df,
-        x_col="Tiempo_min",
-        y_col="Nivel_m",
-        title="Nivel/profundidad vs tiempo de recuperación",
-        x_label="Tiempo (min)",
-        y_label="Nivel/profundidad (m)",
-        invert_y=True,
+    rec_chart = make_line_chart_image(
+        recovery_df, "Tiempo_min", "Nivel_m",
+        "Prueba de recuperación",
+        "Tiempo (min)", "Nivel/profundidad (m)",
+        invert_y=True
     )
-    story.append(chart_image_flowable(recovery_chart))
-    story.append(Paragraph("Figura 2. Gráfico de recuperación.", styles["Small"]))
-    story.append(Spacer(1, 0.4 * cm))
+    story.append(image_flowable(rec_chart))
+    story.append(Paragraph("Figura 4. Gráfico de recuperación de nivel.", styles["FigureCaption"]))
 
     if recovery_df is not None and "Recuperacion_pct" in recovery_df.columns:
-        recovery_pct_chart = make_line_chart_image(
-            recovery_df,
-            x_col="Tiempo_min",
-            y_col="Recuperacion_pct",
-            title="Porcentaje de recuperación vs tiempo",
-            x_label="Tiempo (min)",
-            y_label="Recuperación (%)",
-            invert_y=False,
+        rec_pct_chart = make_line_chart_image(
+            recovery_df, "Tiempo_min", "Recuperacion_pct",
+            "Porcentaje de recuperación",
+            "Tiempo (min)", "Recuperación (%)",
+            invert_y=False
         )
-        story.append(chart_image_flowable(recovery_pct_chart))
-        story.append(Paragraph("Figura 3. Porcentaje de recuperación acumulada.", styles["Small"]))
-        story.append(Spacer(1, 0.4 * cm))
+        story.append(image_flowable(rec_pct_chart))
+        story.append(Paragraph("Figura 5. Porcentaje de recuperación acumulada.", styles["FigureCaption"]))
 
-    # Advertencias
-    story.append(Paragraph("6. Advertencias técnicas", styles["Section"]))
+    # -------------------------------------------------------------------------
+    # 10. TABLAS
+    # -------------------------------------------------------------------------
+    story.append(Paragraph("10. Tabla de prueba de gasto constante", styles["SectionTitle"]))
+    story.append(df_to_pdf_table(pumping_df, max_rows=70, font_size=5.8))
+
+    story.append(Paragraph("11. Tabla de recuperación", styles["SectionTitle"]))
+    story.append(df_to_pdf_table(recovery_df, max_rows=70, font_size=5.8))
+
+    # -------------------------------------------------------------------------
+    # 12. ADVERTENCIAS, CONCLUSIONES Y RECOMENDACIONES
+    # -------------------------------------------------------------------------
+    story.append(Paragraph("12. Advertencias técnicas", styles["SectionTitle"]))
     if warnings:
-        for w in warnings:
-            story.append(Paragraph(f"• {w}", styles["Normal"]))
+        for warning in warnings:
+            story.append(Paragraph(f"• {warning}", styles["Body"]))
     else:
-        story.append(Paragraph("No se registran advertencias técnicas críticas con los datos ingresados.", styles["Normal"]))
+        story.append(Paragraph("No se registran advertencias técnicas críticas con los datos ingresados.", styles["Body"]))
 
-    # Datos bombeo
-    story.append(Paragraph("7. Tabla de prueba de gasto constante", styles["Section"]))
-    story.append(df_to_reportlab_table(pumping_df, max_rows=35))
+    story.append(Paragraph("13. Conclusiones", styles["SectionTitle"]))
+    conclusions = generate_conclusions(capture, calculations, warnings, methodology.get("modo_prueba", ""))
+    for c in conclusions:
+        story.append(Paragraph(f"• {c}", styles["Body"]))
 
-    # Datos recuperación
-    story.append(Paragraph("8. Tabla de recuperación", styles["Section"]))
-    story.append(df_to_reportlab_table(recovery_df, max_rows=35))
+    story.append(Paragraph("14. Recomendaciones", styles["SectionTitle"]))
+    recs = generate_recommendations(capture, calculations, warnings)
+    for r in recs:
+        story.append(Paragraph(f"• {r}", styles["Body"]))
 
-    # Conclusiones
-    story.append(Paragraph("9. Conclusiones", styles["Section"]))
-
-    tipo = capture.get("tipo", "")
-    dur = calculations.get("duration_min")
-    if tipo == "Pozo profundo" and dur is not None and dur < 1440:
-        story.append(Paragraph(
-            "La prueba corresponde a un ensayo abreviado respecto de una prueba estándar de 24 horas para pozo profundo. "
-            "Los resultados permiten una evaluación preliminar del comportamiento hidráulico durante el periodo medido, "
-            "pero no deben interpretarse como cumplimiento formal de una prueba de 24 horas.",
-            styles["Normal"]
-        ))
-
-    story.append(Paragraph(
-        "Las conclusiones se basan exclusivamente en los datos ingresados por el usuario. "
-        "No se han rellenado ni inventado mediciones faltantes.",
-        styles["Normal"]
-    ))
-
-    story.append(Spacer(1, 1.5 * cm))
+    story.append(Spacer(1, 1.0 * cm))
     firmas = [
         ["____________________________", "____________________________"],
-        ["Firma consultor", "Firma beneficiario/cliente"],
+        ["Firma consultor", "Firma beneficiario / cliente"],
     ]
-    story.append(make_table(firmas, col_widths=[8 * cm, 8 * cm], header=False))
+    story.append(make_table(firmas, col_widths=[8 * cm, 8 * cm], first_col_bold=False))
 
-    doc.build(story)
+    doc.build(story, onFirstPage=lambda c, d: None, onLaterPages=later_pages)
     return buffer.getvalue()
 
 
-def make_table(data, col_widths=None, header=False):
-    table = Table(data, colWidths=col_widths)
-    style = [
-        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#edf7ef")),
-    ]
-    if header:
-        style.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d9ead3")))
-        style.append(("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"))
-    table.setStyle(TableStyle(style))
-    return table
-
-
-def df_to_reportlab_table(df: pd.DataFrame, max_rows: int = 30):
-    if df is None or df.empty:
-        return Paragraph("Sin datos ingresados.", getSampleStyleSheet()["Normal"])
-
-    show = df.head(max_rows).copy()
-    show = show.fillna("")
-    data = [list(show.columns)] + show.astype(str).values.tolist()
-    table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d9ead3")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 6),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]))
-    return table
-
-
-# =========================
-# Interfaz
-# =========================
+# =============================================================================
+# INTERFAZ STREAMLIT
+# =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Versión mínima funcional")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
@@ -539,21 +891,18 @@ with st.sidebar:
     direccion = st.text_area("Dirección", COMPANY_DEFAULTS["direccion"])
     celular = st.text_input("Celular", COMPANY_DEFAULTS["celular"])
     correo = st.text_input("Correo", COMPANY_DEFAULTS["correo"])
+    st.caption("Estos datos se insertan automáticamente en portada y pie de página.")
 
-company = {
-    "empresa": empresa,
-    "direccion": direccion,
-    "celular": celular,
-    "correo": correo,
-}
+company = {"empresa": empresa, "direccion": direccion, "celular": celular, "correo": correo}
 
 tabs = st.tabs([
     "1. Proyecto",
     "2. Captación",
-    "3. Equipos",
-    "4. Bombeo",
-    "5. Recuperación",
-    "6. Resultados e informe"
+    "3. Estratigrafía",
+    "4. Equipos y metodología",
+    "5. Bombeo",
+    "6. Recuperación",
+    "7. Resultados e informe",
 ])
 
 with tabs[0]:
@@ -561,194 +910,201 @@ with tabs[0]:
     col1, col2 = st.columns(2)
     with col1:
         nombre_proyecto = st.text_input("Nombre del proyecto", "Prueba de bombeo")
+        identificacion = st.text_input("Identificación de captación", "Captación subterránea")
         cliente = st.text_input("Cliente / beneficiario")
         sector = st.text_input("Sector / predio")
     with col2:
         comuna = st.text_input("Comuna")
         region = st.text_input("Región", "Región del Biobío")
         consultor = st.text_input("Consultor responsable")
+        observaciones_proyecto = st.text_area("Observaciones generales")
 
     project = {
         "nombre_proyecto": nombre_proyecto,
+        "identificacion": identificacion,
         "cliente": cliente,
         "sector": sector,
         "comuna": comuna,
         "region": region,
         "consultor": consultor,
+        "observaciones": observaciones_proyecto,
     }
 
 with tabs[1]:
-    st.subheader("Captación y habilitación")
+    st.subheader("Captación, ubicación y habilitación")
     col1, col2, col3 = st.columns(3)
+
     with col1:
         tipo = st.selectbox("Tipo de captación", ["Pozo profundo", "Noria / pozo de gran diámetro", "Puntera", "Dren", "Otro"])
+        condicion = st.selectbox("Condición", ["No informado", "No surgente", "Surgente"])
         utm_norte = st.text_input("UTM Norte")
         utm_este = st.text_input("UTM Este")
         datum = st.text_input("Datum", "SIRGAS WGS84 / WGS84")
-    with col2:
         huso = st.text_input("Huso", "18S")
-        profundidad_total = st.number_input("Profundidad total (m)", min_value=0.0, step=0.1)
-        diametro = st.text_input("Diámetro")
+
+    with col2:
+        profundidad_total = st.number_input("Profundidad total (m)", min_value=0.0, step=0.1, value=0.0)
+        diametro_perforacion = st.text_input("Diámetro perforación")
+        diametro_entubacion = st.text_input("Diámetro entubación")
+        material_tuberia = st.text_input("Material / espesor tubería")
+        altura_sobre_terreno = st.text_input("Altura tubería sobre terreno")
         nivel_estatico = st.number_input("Nivel estático inicial (m)", min_value=-50.0, step=0.01, value=0.0)
+
     with col3:
-        observaciones_captacion = st.text_area("Observaciones de captación/habilitación")
+        st.caption("Si no tienes información de cribas o tramo filtrante, deja estos campos en 0.")
+        criba_desde = st.number_input("Criba desde (m)", min_value=0.0, step=0.1, value=0.0)
+        criba_hasta = st.number_input("Criba hasta (m)", min_value=0.0, step=0.1, value=0.0)
+        tuberia_ciega = st.text_input("Tramos tubería ciega")
+        profundidad_bomba = st.number_input("Profundidad bomba (m)", min_value=0.0, step=0.1, value=0.0)
+        tuberia_extraccion = st.text_input("Tubería extracción/succión")
+        observaciones_captacion = st.text_area("Observaciones de habilitación")
+
+    st.write("#### Imágenes opcionales")
+    location_image = st.file_uploader("Cargar croquis o imagen de ubicación", type=["jpg", "jpeg", "png"], key="location_image")
+    scheme_image = st.file_uploader("Cargar esquema constructivo del pozo/captación", type=["jpg", "jpeg", "png"], key="scheme_image")
 
     capture = {
         "tipo": tipo,
+        "condicion": condicion,
         "utm_norte": utm_norte,
         "utm_este": utm_este,
         "datum": datum,
         "huso": huso,
-        "profundidad_total": profundidad_total if profundidad_total > 0 else "",
-        "diametro": diametro,
+        "profundidad_total": profundidad_total if profundidad_total > 0 else None,
+        "diametro_perforacion": diametro_perforacion,
+        "diametro_entubacion": diametro_entubacion,
+        "material_tuberia": material_tuberia,
+        "altura_sobre_terreno": altura_sobre_terreno,
         "nivel_estatico": nivel_estatico,
+        "criba_desde": criba_desde if criba_desde > 0 else "",
+        "criba_hasta": criba_hasta if criba_hasta > 0 else "",
+        "tuberia_ciega": tuberia_ciega,
+        "profundidad_bomba": profundidad_bomba if profundidad_bomba > 0 else None,
+        "tuberia_extraccion": tuberia_extraccion,
         "observaciones": observaciones_captacion,
     }
 
 with tabs[2]:
-    st.subheader("Equipos utilizados")
+    st.subheader("Estratigrafía")
+    st.info("Ingresa los tramos reconocidos/perforados. Esta tabla se incluirá en el informe.")
+    default_strat = pd.DataFrame({
+        "Desde_m": [0.0, 1.0, 5.0],
+        "Hasta_m": [1.0, 5.0, 12.0],
+        "Descripcion": ["Suelo vegetal", "Material fino / arcilloso", "Arena / grava / material permeable"],
+        "Observacion": ["", "", ""],
+    })
+    stratigraphy_df = st.data_editor(default_strat, num_rows="dynamic", use_container_width=True, key="strat_editor")
+
+with tabs[3]:
+    st.subheader("Equipos utilizados y metodología")
     col1, col2 = st.columns(2)
     with col1:
         bomba = st.text_input("Bomba: tipo/marca/modelo")
         potencia = st.text_input("Potencia")
         medidor_caudal = st.text_input("Medidor de caudal")
-    with col2:
         instrumento_nivel = st.text_input("Instrumento de medición de nivel")
+        generador = st.text_input("Generador / fuente eléctrica")
         observaciones_equipos = st.text_area("Observaciones de equipos")
+
+    with col2:
+        modo_prueba = st.selectbox("Modo de prueba", ["Ensayo abreviado 180 min + recuperación", "DGA estándar 24 h", "Otro"])
+        fecha_prueba = st.text_input("Fecha de prueba", datetime.now().strftime("%d-%m-%Y"))
+        hora_inicio = st.text_input("Hora inicio bombeo")
+        hora_termino = st.text_input("Hora término bombeo")
+        caudal_objetivo = st.text_input("Caudal objetivo")
+        metodo_caudal = st.text_input("Método medición caudal", "Caudalímetro")
+        metodo_nivel = st.text_input("Método medición niveles", "Pozómetro")
+        frecuencia = st.text_input("Frecuencia de medición")
+        observaciones_metodologia = st.text_area("Observaciones metodológicas")
 
     equipment = {
         "bomba": bomba,
         "potencia": potencia,
         "medidor_caudal": medidor_caudal,
         "instrumento_nivel": instrumento_nivel,
+        "generador": generador,
         "observaciones": observaciones_equipos,
     }
 
-with tabs[3]:
-    st.subheader("Prueba de gasto constante")
-
-    st.info("Puedes editar la tabla directamente. No se rellenan datos faltantes.")
-
-    default_pumping = pd.DataFrame({
-        "Tiempo_min": [0, 1, 2, 3, 4, 5, 10, 20, 30, 60, 90, 120, 150, 180],
-        "Nivel_m": [0.0, 2.5, 3.2, 3.8, 4.2, 4.6, 5.2, 5.8, 6.1, 6.6, 6.8, 6.9, 6.95, 7.0],
-        "Caudal_L_s": [1.0] * 14,
-        "Observacion": [""] * 14,
-    })
-
-    pumping_df = st.data_editor(
-        default_pumping,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="pumping_editor"
-    )
-
-with tabs[4]:
-    st.subheader("Prueba de recuperación")
-
-    default_recovery = pd.DataFrame({
-        "Tiempo_min": [0, 1, 2, 3, 4, 5, 10, 20, 30, 60, 90, 120, 150, 180],
-        "Nivel_m": [7.0, 6.4, 5.9, 5.4, 5.0, 4.6, 3.6, 2.5, 1.8, 0.8, 0.35, 0.1, 0.0, 0.0],
-        "Observacion": [""] * 14,
-    })
-
-    recovery_df = st.data_editor(
-        default_recovery,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="recovery_editor"
-    )
-
-with tabs[5]:
-    st.subheader("Resultados, advertencias y exportaciones")
-
-    # Limpieza para cálculos
-    pumping_calc = pumping_df.copy()
-    pumping_calc["Tiempo_min"] = clean_numeric_series(pumping_calc["Tiempo_min"])
-    pumping_calc["Nivel_m"] = clean_numeric_series(pumping_calc["Nivel_m"])
-    pumping_calc["Caudal_L_s"] = clean_numeric_series(pumping_calc["Caudal_L_s"])
-
-    recovery_calc = recovery_df.copy()
-    recovery_calc["Tiempo_min"] = clean_numeric_series(recovery_calc["Tiempo_min"])
-    recovery_calc["Nivel_m"] = clean_numeric_series(recovery_calc["Nivel_m"])
-
-    valid_pumping = pumping_calc.dropna(subset=["Tiempo_min", "Nivel_m"]).sort_values("Tiempo_min")
-    duration_min = None
-    final_dynamic = None
-
-    if not valid_pumping.empty:
-        duration_min = float(valid_pumping["Tiempo_min"].max() - valid_pumping["Tiempo_min"].min())
-        final_dynamic = float(valid_pumping.sort_values("Tiempo_min")["Nivel_m"].iloc[-1])
-
-    flow_stats = calculate_flow_stats(pumping_calc)
-    drawdown = calculate_drawdown(nivel_estatico, final_dynamic) if final_dynamic is not None else None
-    specific_capacity = calculate_specific_capacity(flow_stats["q_mean"], drawdown) if flow_stats["q_mean"] is not None else None
-    volume_m3 = calculate_pumped_volume(pumping_calc)
-    stab = evaluate_stabilization(pumping_calc)
-
-    if final_dynamic is not None:
-        recovery_with_pct = calculate_recovery(recovery_calc, nivel_estatico, final_dynamic)
-    else:
-        recovery_with_pct = recovery_calc.copy()
-        recovery_with_pct["Recuperacion_pct"] = np.nan
-
-    recovery_max = None
-    if "Recuperacion_pct" in recovery_with_pct.columns:
-        rec_valid = recovery_with_pct["Recuperacion_pct"].dropna()
-        recovery_max = float(rec_valid.max()) if not rec_valid.empty else None
-
-    t75 = time_to_recovery(recovery_with_pct, 75)
-    t90 = time_to_recovery(recovery_with_pct, 90)
-    t100 = time_to_recovery(recovery_with_pct, 100)
-
-    warnings = []
-    add_warning(warnings, tipo == "Pozo profundo" and duration_min is not None and duration_min < 1440,
-                "Pozo profundo con duración menor a 24 horas: no declarar cumplimiento formal de prueba estándar de 24 h.")
-    add_warning(warnings, stab["evaluable"] is False,
-                stab["message"])
-    add_warning(warnings, flow_stats["is_constant"] is False,
-                "El caudal no se mantuvo constante dentro de la tolerancia definida.")
-    add_warning(warnings, recovery_max is not None and recovery_max < 75,
-                "Recuperación inferior a 75%; interpretación limitada.")
-    add_warning(warnings, not utm_norte or not utm_este,
-                "Faltan coordenadas UTM.")
-    add_warning(warnings, tipo == "Puntera" and not instrumento_nivel.lower().strip().startswith("piez"),
-                "En punteras, el control de niveles debe efectuarse en piezómetro habilitado.")
-
-    calculations = {
-        **flow_stats,
-        "duration_min": duration_min,
-        "final_dynamic": final_dynamic,
-        "drawdown": drawdown,
-        "specific_capacity": specific_capacity,
-        "volume_m3": volume_m3,
-        "slope_cm_h": stab["slope_cm_h"],
-        "stabilization_message": stab["message"],
-        "recovery_max": recovery_max,
-        "t75": t75,
-        "t90": t90,
-        "t100": t100,
+    methodology = {
+        "modo_prueba": modo_prueba,
+        "fecha_prueba": fecha_prueba,
+        "hora_inicio": hora_inicio,
+        "hora_termino": hora_termino,
+        "caudal_objetivo": caudal_objetivo,
+        "metodo_caudal": metodo_caudal,
+        "metodo_nivel": metodo_nivel,
+        "frecuencia": frecuencia,
+        "observaciones": observaciones_metodologia,
     }
 
+with tabs[4]:
+    st.subheader("Prueba de gasto constante")
+    st.warning("El sistema no rellena datos faltantes. Solo calcula con datos ingresados/importados.")
+
+    if "24 h" in locals().get("modo_prueba", ""):
+        default_times = [0,1,2,3,4,5,10,20,30,60,120,180,240,300,360,420,480,540,600,660,720,780,840,900,960,1020,1080,1140,1200,1260,1320,1380,1440]
+    else:
+        default_times = [0,1,2,3,4,5,10,15,20,30,45,60,90,120,150,180]
+
+    default_pumping = pd.DataFrame({
+        "Fecha": [""] * len(default_times),
+        "Hora": [""] * len(default_times),
+        "Tiempo_min": default_times,
+        "Nivel_m": [np.nan] * len(default_times),
+        "Caudal_L_s": [np.nan] * len(default_times),
+        "Observacion": [""] * len(default_times),
+    })
+
+    pumping_df = st.data_editor(default_pumping, num_rows="dynamic", use_container_width=True, key="pumping_editor")
+
+with tabs[5]:
+    st.subheader("Prueba de recuperación")
+    default_rec_times = [0,1,2,3,4,5,10,15,20,30,45,60,90,120,150,180]
+    default_recovery = pd.DataFrame({
+        "Fecha": [""] * len(default_rec_times),
+        "Hora": [""] * len(default_rec_times),
+        "Tiempo_min": default_rec_times,
+        "Nivel_m": [np.nan] * len(default_rec_times),
+        "Observacion": [""] * len(default_rec_times),
+    })
+
+    recovery_df = st.data_editor(default_recovery, num_rows="dynamic", use_container_width=True, key="recovery_editor")
+
+with tabs[6]:
+    st.subheader("Resultados, gráficos e informe")
+
+    calculations, recovery_with_pct = build_calculations(pumping_df, recovery_df, nivel_estatico)
+
+    warnings = []
+    add_warning(warnings, tipo == "Pozo profundo" and calculations.get("duration_min") is not None and calculations.get("duration_min") < 1440,
+                "Pozo profundo con duración menor a 24 horas: no declarar cumplimiento formal de prueba estándar de 24 h.")
+    add_warning(warnings, tipo == "Puntera" and "piez" not in safe_text(instrumento_nivel, "").lower(),
+                "En punteras, el control de niveles debe efectuarse en piezómetro habilitado.")
+    add_warning(warnings, not utm_norte or not utm_este, "Faltan coordenadas UTM.")
+    add_warning(warnings, calculations.get("stabilization_evaluable") is False, calculations.get("stabilization_message"))
+    add_warning(warnings, calculations.get("is_constant") is False, "El caudal no se mantuvo constante dentro de la tolerancia definida.")
+    add_warning(warnings, calculations.get("recovery_max") is not None and calculations.get("recovery_max") < 75, "Recuperación inferior a 75%; interpretación limitada.")
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Duración", format_value(duration_min, " min", 0))
-    c2.metric("Caudal promedio", format_value(flow_stats["q_mean"], " L/s"))
-    c3.metric("Abatimiento", format_value(drawdown, " m"))
-    c4.metric("Caudal específico", format_value(specific_capacity, " L/s/m"))
+    c1.metric("Duración", fmt(calculations.get("duration_min"), " min", decimals=0))
+    c2.metric("Caudal promedio", fmt(calculations.get("q_mean"), " L/s"))
+    c3.metric("Abatimiento", fmt(calculations.get("drawdown"), " m"))
+    c4.metric("Caudal específico", fmt(calculations.get("specific_capacity"), " L/s/m"))
 
     c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Volumen bombeado", format_value(volume_m3, " m³"))
-    c6.metric("Pendiente final", format_value(stab["slope_cm_h"], " cm/h"))
-    c7.metric("Recuperación máxima", format_value(recovery_max, " %"))
-    c8.metric("Tiempo 90%", format_value(t90, " min", 0))
+    c5.metric("Volumen bombeado", fmt(calculations.get("volume_m3"), " m³"))
+    c6.metric("Pendiente final", fmt(calculations.get("slope_cm_h"), " cm/h"))
+    c7.metric("Recuperación máxima", fmt(calculations.get("recovery_max"), " %"))
+    c8.metric("Tiempo 90%", fmt(calculations.get("t90"), " min", decimals=0))
 
     st.write("### Evaluación de estabilización")
-    if stab["meets"]:
-        st.success(stab["message"])
-    elif stab["evaluable"]:
-        st.error(stab["message"])
+    if calculations.get("stabilization_meets"):
+        st.success(calculations.get("stabilization_message"))
+    elif calculations.get("stabilization_evaluable"):
+        st.error(calculations.get("stabilization_message"))
     else:
-        st.warning(stab["message"])
+        st.warning(calculations.get("stabilization_message"))
 
     st.write("### Advertencias técnicas")
     if warnings:
@@ -760,34 +1116,32 @@ with tabs[5]:
     st.write("### Gráficos")
     g1, g2 = st.columns(2)
 
+    pump_valid = df_numeric(pumping_df, ["Tiempo_min", "Nivel_m"]).dropna(subset=["Tiempo_min", "Nivel_m"])
+    rec_valid = df_numeric(recovery_with_pct, ["Tiempo_min", "Nivel_m"]).dropna(subset=["Tiempo_min", "Nivel_m"])
+
     with g1:
-        if not valid_pumping.empty:
+        if len(pump_valid) >= 2:
             fig1 = px.line(
-                valid_pumping,
-                x="Tiempo_min",
-                y="Nivel_m",
-                markers=True,
+                pump_valid.sort_values("Tiempo_min"), x="Tiempo_min", y="Nivel_m", markers=True,
                 title="Nivel/profundidad vs tiempo de bombeo",
                 labels={"Tiempo_min": "Tiempo (min)", "Nivel_m": "Nivel/profundidad (m)"}
             )
-            fig1.update_yaxes(autorange="reversed", title_text="Nivel/profundidad (m)")
-            fig1.update_xaxes(title_text="Tiempo (min)")
+            fig1.update_yaxes(autorange="reversed")
             st.plotly_chart(fig1, use_container_width=True)
+        else:
+            st.info("No hay suficientes datos para gráfico de bombeo.")
 
     with g2:
-        rec_valid = recovery_with_pct.dropna(subset=["Tiempo_min", "Nivel_m"]) if not recovery_with_pct.empty else pd.DataFrame()
-        if not rec_valid.empty:
+        if len(rec_valid) >= 2:
             fig2 = px.line(
-                rec_valid,
-                x="Tiempo_min",
-                y="Nivel_m",
-                markers=True,
+                rec_valid.sort_values("Tiempo_min"), x="Tiempo_min", y="Nivel_m", markers=True,
                 title="Nivel/profundidad vs tiempo de recuperación",
                 labels={"Tiempo_min": "Tiempo (min)", "Nivel_m": "Nivel/profundidad (m)"}
             )
-            fig2.update_yaxes(autorange="reversed", title_text="Nivel/profundidad (m)")
-            fig2.update_xaxes(title_text="Tiempo (min)")
+            fig2.update_yaxes(autorange="reversed")
             st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("No hay suficientes datos para gráfico de recuperación.")
 
     st.write("### Exportar")
 
@@ -797,8 +1151,10 @@ with tabs[5]:
         pd.DataFrame([company]).to_excel(writer, sheet_name="Empresa", index=False)
         pd.DataFrame([project]).to_excel(writer, sheet_name="Proyecto", index=False)
         pd.DataFrame([capture]).to_excel(writer, sheet_name="Captacion", index=False)
+        stratigraphy_df.to_excel(writer, sheet_name="Estratigrafia", index=False)
         pd.DataFrame([equipment]).to_excel(writer, sheet_name="Equipos", index=False)
-        pumping_calc.to_excel(writer, sheet_name="Bombeo", index=False)
+        pd.DataFrame([methodology]).to_excel(writer, sheet_name="Metodologia", index=False)
+        pumping_df.to_excel(writer, sheet_name="Bombeo", index=False)
         recovery_with_pct.to_excel(writer, sheet_name="Recuperacion", index=False)
         pd.DataFrame([calculations]).to_excel(writer, sheet_name="Calculos", index=False)
         pd.DataFrame({"Advertencias": warnings}).to_excel(writer, sheet_name="Advertencias", index=False)
@@ -807,24 +1163,27 @@ with tabs[5]:
         "Descargar Excel",
         data=excel_buffer.getvalue(),
         file_name="prueba_bombeo.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    # PDF
     pdf_bytes = make_pdf(
         company=company,
         project=project,
         capture=capture,
+        stratigraphy_df=stratigraphy_df,
         equipment=equipment,
-        pumping_df=pumping_calc,
+        methodology=methodology,
+        pumping_df=pumping_df,
         recovery_df=recovery_with_pct,
         calculations=calculations,
         warnings=warnings,
+        location_image=location_image,
+        scheme_image=scheme_image,
     )
 
     st.download_button(
-        "Generar y descargar PDF",
+        "Generar y descargar PDF profesional",
         data=pdf_bytes,
-        file_name="informe_prueba_bombeo.pdf",
-        mime="application/pdf"
+        file_name="informe_prueba_bombeo_profesional.pdf",
+        mime="application/pdf",
     )
