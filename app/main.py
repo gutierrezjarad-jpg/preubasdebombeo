@@ -20,6 +20,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     SimpleDocTemplate, BaseDocTemplate, PageTemplate, Frame,
     Paragraph, Spacer, Table, TableStyle, Image as RLImage,
@@ -305,7 +306,90 @@ def image_flowable(image_buffer: BytesIO | None, width_cm: float = 16.5, height_
     if image_buffer is None:
         return Paragraph("Gráfico no disponible: datos insuficientes.", get_styles()["Body"])
     image_buffer.seek(0)
-    return RLImage(image_buffer, width=width_cm * cm, height=height_cm * cm)
+    img = rl_image_preserve_aspect(image_buffer, max_width_cm=width_cm, max_height_cm=height_cm)
+    if img is None:
+        return Paragraph("Gráfico no disponible: error al procesar imagen.", get_styles()["Body"])
+    return img
+
+
+
+# =============================================================================
+# IMÁGENES CON PROPORCIÓN CONSERVADA
+# =============================================================================
+
+def _image_source_from_uploaded(uploaded_file):
+    if uploaded_file is None:
+        return None
+    try:
+        return BytesIO(uploaded_file.getvalue())
+    except Exception:
+        return None
+
+
+def _scaled_dimensions(img_width_px, img_height_px, max_width_cm: float, max_height_cm: float):
+    """
+    Calcula dimensiones para insertar imagen sin deformarla.
+    """
+    max_w = max_width_cm * cm
+    max_h = max_height_cm * cm
+
+    if img_width_px <= 0 or img_height_px <= 0:
+        return max_w, max_h
+
+    scale = min(max_w / img_width_px, max_h / img_height_px)
+    return img_width_px * scale, img_height_px * scale
+
+
+def rl_image_preserve_aspect(source, max_width_cm: float, max_height_cm: float):
+    """
+    Crea un Image flowable de ReportLab preservando proporción.
+    Acepta Path, str, BytesIO o UploadedFile convertido a BytesIO.
+    """
+    if source is None:
+        return None
+
+    try:
+        if isinstance(source, Path):
+            source_for_reader = str(source)
+            source_for_image = str(source)
+        elif isinstance(source, str):
+            source_for_reader = source
+            source_for_image = source
+        elif isinstance(source, BytesIO):
+            data = source.getvalue()
+            source_for_reader = BytesIO(data)
+            source_for_image = BytesIO(data)
+        else:
+            return None
+
+        reader = ImageReader(source_for_reader)
+        img_w, img_h = reader.getSize()
+        width, height = _scaled_dimensions(img_w, img_h, max_width_cm, max_height_cm)
+        return RLImage(source_for_image, width=width, height=height)
+    except Exception:
+        return None
+
+
+def draw_header_logo(canvas, x, y, max_w, max_h):
+    """
+    Dibuja el logo en canvas sin deformarlo.
+    """
+    if not LOGO_PATH.exists():
+        return False
+    try:
+        canvas.drawImage(
+            str(LOGO_PATH),
+            x,
+            y,
+            width=max_w,
+            height=max_h,
+            preserveAspectRatio=True,
+            anchor="w",
+            mask="auto",
+        )
+        return True
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -343,28 +427,40 @@ def report_header_footer(canvas, doc, company: dict):
     canvas.saveState()
     width, height = A4
 
-    # Header line
-    canvas.setStrokeColor(colors.HexColor("#006b2e"))
-    canvas.setLineWidth(0.6)
-    canvas.line(1.4 * cm, height - 1.15 * cm, width - 1.4 * cm, height - 1.15 * cm)
+    green = colors.HexColor("#006b2e")
+    gray = colors.HexColor("#444444")
 
-    canvas.setFont("Helvetica-Bold", 7.2)
-    canvas.setFillColor(colors.HexColor("#006b2e"))
-    canvas.drawString(1.5 * cm, height - 0.88 * cm, safe_text(company.get("empresa"), ""))
+    # Header: logo pequeño + nombre empresa
+    logo_drawn = draw_header_logo(
+        canvas,
+        x=1.45 * cm,
+        y=height - 1.05 * cm,
+        max_w=1.25 * cm,
+        max_h=0.72 * cm,
+    )
 
-    # Footer
+    text_x = 2.85 * cm if logo_drawn else 1.5 * cm
+
+    canvas.setFont("Helvetica-Bold", 7.4)
+    canvas.setFillColor(green)
+    canvas.drawString(text_x, height - 0.72 * cm, safe_text(company.get("empresa"), ""))
+
+    canvas.setStrokeColor(green)
+    canvas.setLineWidth(0.65)
+    canvas.line(1.4 * cm, height - 1.22 * cm, width - 1.4 * cm, height - 1.22 * cm)
+
+    # Footer: contacto + número de página
     canvas.setStrokeColor(colors.HexColor("#bbbbbb"))
     canvas.setLineWidth(0.35)
-    canvas.line(1.4 * cm, 1.05 * cm, width - 1.4 * cm, 1.05 * cm)
+    canvas.line(1.4 * cm, 1.02 * cm, width - 1.4 * cm, 1.02 * cm)
 
-    canvas.setFont("Helvetica", 6.7)
-    canvas.setFillColor(colors.HexColor("#444444"))
+    canvas.setFont("Helvetica", 6.5)
+    canvas.setFillColor(gray)
     footer = f"{safe_text(company.get('direccion'), '')} | {safe_text(company.get('celular'), '')} | {safe_text(company.get('correo'), '')}"
-    canvas.drawString(1.5 * cm, 0.72 * cm, footer[:128])
-    canvas.drawRightString(width - 1.5 * cm, 0.72 * cm, f"Página {doc.page}")
+    canvas.drawString(1.5 * cm, 0.68 * cm, footer[:130])
+    canvas.drawRightString(width - 1.5 * cm, 0.68 * cm, f"Página {doc.page}")
 
     canvas.restoreState()
-
 
 def make_table(data, col_widths=None, header=False, font_size=7.2, first_col_bold=True):
     wrapped = []
@@ -424,14 +520,13 @@ def df_to_pdf_table(df: pd.DataFrame, max_rows: int = 55, font_size: float = 6.0
 
 
 def uploaded_image_flowable(uploaded_file, width_cm: float = 15.5, height_cm: float = 8.5):
-    if uploaded_file is None:
+    """
+    Inserta imágenes subidas por el usuario sin deformarlas.
+    """
+    src = _image_source_from_uploaded(uploaded_file)
+    if src is None:
         return None
-    try:
-        data = uploaded_file.getvalue()
-        return RLImage(BytesIO(data), width=width_cm * cm, height=height_cm * cm)
-    except Exception:
-        return None
-
+    return rl_image_preserve_aspect(src, width_cm, height_cm)
 
 def make_simple_well_scheme(capture: dict):
     """
@@ -628,8 +723,8 @@ def make_pdf(
         pagesize=A4,
         rightMargin=1.5 * cm,
         leftMargin=1.5 * cm,
-        topMargin=1.65 * cm,
-        bottomMargin=1.35 * cm,
+        topMargin=1.85 * cm,
+        bottomMargin=1.45 * cm,
     )
 
     def later_pages(canvas, doc_obj):
@@ -641,12 +736,12 @@ def make_pdf(
     # PORTADA
     # -------------------------------------------------------------------------
     if LOGO_PATH.exists():
-        try:
-            story.append(RLImage(str(LOGO_PATH), width=7.0 * cm, height=4.0 * cm))
-            story.append(Spacer(1, 0.3 * cm))
-        except Exception:
-            pass
+        logo_flow = rl_image_preserve_aspect(LOGO_PATH, max_width_cm=6.2, max_height_cm=3.4)
+        if logo_flow:
+            story.append(logo_flow)
+            story.append(Spacer(1, 0.35 * cm))
 
+    story.append(Spacer(1, 0.25 * cm))
     story.append(Paragraph("INFORME DE PRUEBA DE BOMBEO", styles["CoverTitle"]))
     story.append(Paragraph(f"<b>{safe_text(project.get('identificacion'), 'Captación subterránea')}</b>", styles["CoverSubtitle"]))
     story.append(Spacer(1, 0.5 * cm))
@@ -721,7 +816,7 @@ def make_pdf(
     story.append(make_table(cap_data, col_widths=[5.2 * cm, 11.2 * cm]))
 
     if location_image is not None:
-        loc_flow = uploaded_image_flowable(location_image, width_cm=15.5, height_cm=8.0)
+        loc_flow = uploaded_image_flowable(location_image, width_cm=16.0, height_cm=9.0)
         if loc_flow:
             story.append(Spacer(1, 0.35 * cm))
             story.append(loc_flow)
@@ -732,7 +827,7 @@ def make_pdf(
     if scheme_flow is None:
         scheme_buf = make_simple_well_scheme(capture)
         if scheme_buf is not None:
-            scheme_flow = image_flowable(scheme_buf, width_cm=8.0, height_cm=12.0)
+            scheme_flow = rl_image_preserve_aspect(scheme_buf, max_width_cm=8.2, max_height_cm=12.0)
             story.append(Paragraph("Esquema referencial generado automáticamente a partir de los datos ingresados. No reemplaza plano constructivo real.", styles["Small"]))
         else:
             scheme_flow = Paragraph("Esquema constructivo no generado: falta profundidad total o datos mínimos de captación.", styles["Body"])
@@ -871,7 +966,7 @@ def make_pdf(
     ]
     story.append(make_table(firmas, col_widths=[8 * cm, 8 * cm], first_col_bold=False))
 
-    doc.build(story, onFirstPage=lambda c, d: None, onLaterPages=later_pages)
+    doc.build(story, onFirstPage=later_pages, onLaterPages=later_pages)
     return buffer.getvalue()
 
 
@@ -880,7 +975,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.2")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
