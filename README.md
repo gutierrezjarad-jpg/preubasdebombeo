@@ -27,3 +27,21 @@ streamlit run app/main.py
 ## Nota técnica
 
 El sistema no rellena datos faltantes ni presenta valores estimados como medidos.
+
+
+## Versión 2.2 - mejoras de formato
+
+- Logo pequeño en el encabezado de todas las páginas.
+- Logo de portada sin deformación.
+- Imágenes subidas al informe con proporción conservada.
+- Croquis/ubicación sin achatamiento.
+- Gráficos insertados sin deformación.
+- Márgenes ajustados para encabezado y pie de página.
+
+
+## Versión 2.3 - exportación Word y PDF
+
+- Se elimina la exportación Excel de la interfaz.
+- Se agrega exportación Word editable (.docx).
+- Se mantiene exportación PDF formal.
+- Ambos informes incluyen datos del proyecto, captación, estratigrafía, equipos, metodología, resultados, gráficos, tablas, advertencias, conclusiones y recomendaciones.

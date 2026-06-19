@@ -27,6 +27,11 @@ from reportlab.platypus import (
     PageBreak, KeepTogether
 )
 
+from docx import Document
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
+
 # =============================================================================
 # CONFIGURACIÓN GENERAL
 # =============================================================================
@@ -616,6 +621,345 @@ def make_simple_well_scheme(capture: dict):
     buf.seek(0)
     return buf
 
+
+# =============================================================================
+# GENERACIÓN WORD
+# =============================================================================
+
+def add_docx_heading(document, text_value: str, level: int = 1):
+    heading = document.add_heading(text_value, level=level)
+    for run in heading.runs:
+        run.font.color.rgb = RGBColor(0, 107, 46)
+    return heading
+
+
+def add_docx_paragraph(document, text_value: str):
+    p = document.add_paragraph()
+    p.style = document.styles["Normal"]
+    run = p.add_run(safe_text(text_value, ""))
+    run.font.size = Pt(9)
+    return p
+
+
+def add_docx_table(document, rows: list[list], first_col_bold: bool = True):
+    if not rows:
+        return None
+
+    table = document.add_table(rows=len(rows), cols=len(rows[0]))
+    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+    for i, row in enumerate(rows):
+        for j, value in enumerate(row):
+            cell = table.cell(i, j)
+            cell.text = safe_text(value, "")
+            for p in cell.paragraphs:
+                for run in p.runs:
+                    run.font.size = Pt(8)
+                    if first_col_bold and j == 0:
+                        run.bold = True
+    document.add_paragraph()
+    return table
+
+
+def add_df_docx_table(document, df: pd.DataFrame, max_rows: int = 80):
+    if df is None or df.empty:
+        add_docx_paragraph(document, "Sin datos ingresados.")
+        return
+
+    show = df.head(max_rows).fillna("")
+    table = document.add_table(rows=1, cols=len(show.columns))
+    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+    hdr = table.rows[0].cells
+    for j, col in enumerate(show.columns):
+        hdr[j].text = str(col)
+        for p in hdr[j].paragraphs:
+            for run in p.runs:
+                run.bold = True
+                run.font.size = Pt(7)
+
+    for _, row in show.iterrows():
+        cells = table.add_row().cells
+        for j, col in enumerate(show.columns):
+            cells[j].text = str(row[col])
+            for p in cells[j].paragraphs:
+                for run in p.runs:
+                    run.font.size = Pt(7)
+
+    document.add_paragraph()
+
+
+def add_docx_picture_from_buffer(document, image_buffer: BytesIO | None, width_inches: float = 6.2):
+    if image_buffer is None:
+        add_docx_paragraph(document, "Imagen no disponible.")
+        return
+
+    try:
+        image_buffer.seek(0)
+        document.add_picture(image_buffer, width=Inches(width_inches))
+    except Exception:
+        add_docx_paragraph(document, "Imagen no disponible o no pudo insertarse.")
+
+
+def add_docx_picture_from_upload(document, uploaded_file, width_inches: float = 6.2):
+    if uploaded_file is None:
+        return False
+    try:
+        document.add_picture(BytesIO(uploaded_file.getvalue()), width=Inches(width_inches))
+        return True
+    except Exception:
+        return False
+
+
+def make_word_docx(
+    company: dict,
+    project: dict,
+    capture: dict,
+    stratigraphy_df: pd.DataFrame,
+    equipment: dict,
+    methodology: dict,
+    pumping_df: pd.DataFrame,
+    recovery_df: pd.DataFrame,
+    calculations: dict,
+    warnings: list[str],
+    location_image=None,
+    scheme_image=None,
+) -> bytes:
+    """
+    Genera informe Word editable (.docx) con la misma lógica del PDF.
+    El Word permite corrección manual posterior antes de firmar o transformar a PDF.
+    """
+    document = Document()
+
+    # Márgenes
+    section = document.sections[0]
+    section.top_margin = Inches(0.65)
+    section.bottom_margin = Inches(0.65)
+    section.left_margin = Inches(0.7)
+    section.right_margin = Inches(0.7)
+
+    # Encabezado con logo pequeño
+    header = section.header
+    hp = header.paragraphs[0]
+    hp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    if LOGO_PATH.exists():
+        try:
+            hp.add_run().add_picture(str(LOGO_PATH), width=Inches(0.55))
+            hp.add_run("  ")
+        except Exception:
+            pass
+    run = hp.add_run(safe_text(company.get("empresa"), ""))
+    run.bold = True
+    run.font.size = Pt(8)
+    run.font.color.rgb = RGBColor(0, 107, 46)
+
+    # Pie de página
+    footer = section.footer
+    fp = footer.paragraphs[0]
+    fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    fr = fp.add_run(
+        f"{safe_text(company.get('direccion'), '')} | {safe_text(company.get('celular'), '')} | {safe_text(company.get('correo'), '')}"
+    )
+    fr.font.size = Pt(7)
+
+    # Portada
+    if LOGO_PATH.exists():
+        try:
+            p = document.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.add_run().add_picture(str(LOGO_PATH), width=Inches(2.4))
+        except Exception:
+            pass
+
+    title = document.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = title.add_run("INFORME DE PRUEBA DE BOMBEO")
+    r.bold = True
+    r.font.size = Pt(18)
+    r.font.color.rgb = RGBColor(0, 107, 46)
+
+    subtitle = document.add_paragraph()
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sr = subtitle.add_run(safe_text(project.get("identificacion"), "Captación subterránea"))
+    sr.bold = True
+    sr.font.size = Pt(12)
+
+    add_docx_table(document, [
+        ["Cliente / Beneficiario", project.get("cliente")],
+        ["Proyecto", project.get("nombre_proyecto")],
+        ["Sector / Predio", project.get("sector")],
+        ["Comuna", project.get("comuna")],
+        ["Región", project.get("region")],
+        ["Fecha de prueba", methodology.get("fecha_prueba")],
+        ["Fecha de emisión", datetime.now().strftime("%d-%m-%Y")],
+        ["Consultor responsable", project.get("consultor")],
+    ])
+
+    p = document.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.add_run(safe_text(company.get("empresa"))).bold = True
+    add_docx_paragraph(document, safe_text(company.get("direccion")))
+    add_docx_paragraph(document, f"Celular: {safe_text(company.get('celular'))} | Correo: {safe_text(company.get('correo'))}")
+
+    document.add_page_break()
+
+    add_docx_heading(document, "1. Introducción")
+    add_docx_paragraph(document,
+        "El presente informe resume los antecedentes de la captación, su habilitación, "
+        "la metodología de prueba de bombeo, los registros de nivel y caudal, la recuperación posterior "
+        "y los resultados calculados a partir de los datos ingresados. La interpretación se limita al periodo "
+        "efectivamente medido y a la calidad de los datos disponibles."
+    )
+
+    add_docx_heading(document, "2. Antecedentes generales")
+    add_docx_table(document, [
+        ["Cliente", project.get("cliente")],
+        ["Proyecto", project.get("nombre_proyecto")],
+        ["Identificación de captación", project.get("identificacion")],
+        ["Sector / Predio", project.get("sector")],
+        ["Comuna", project.get("comuna")],
+        ["Región", project.get("region")],
+        ["Consultor responsable", project.get("consultor")],
+        ["Observaciones generales", project.get("observaciones")],
+    ])
+
+    add_docx_heading(document, "3. Ubicación y habilitación de la captación")
+    cribas_text = (
+        f"Desde {capture.get('criba_desde')} m hasta {capture.get('criba_hasta')} m"
+        if capture.get("criba_desde") and capture.get("criba_hasta")
+        else "No informado"
+    )
+    add_docx_table(document, [
+        ["Tipo de captación", capture.get("tipo")],
+        ["Coordenada UTM Norte", capture.get("utm_norte")],
+        ["Coordenada UTM Este", capture.get("utm_este")],
+        ["Datum / Huso", f"{safe_text(capture.get('datum'))} / {safe_text(capture.get('huso'))}"],
+        ["Condición", capture.get("condicion")],
+        ["Profundidad total", fmt(capture.get("profundidad_total"), " m")],
+        ["Diámetro perforación", capture.get("diametro_perforacion")],
+        ["Diámetro entubación", capture.get("diametro_entubacion")],
+        ["Material / espesor tubería", capture.get("material_tuberia")],
+        ["Altura sobre terreno", capture.get("altura_sobre_terreno")],
+        ["Nivel estático inicial", fmt(capture.get("nivel_estatico"), " m")],
+        ["Cribas / ranuras", cribas_text],
+        ["Tubería ciega", capture.get("tuberia_ciega")],
+        ["Profundidad de bomba", fmt(capture.get("profundidad_bomba"), " m")],
+        ["Tubería extracción/succión", capture.get("tuberia_extraccion")],
+        ["Observaciones", capture.get("observaciones")],
+    ])
+
+    if location_image is not None:
+        ok = add_docx_picture_from_upload(document, location_image, width_inches=6.2)
+        if ok:
+            add_docx_paragraph(document, "Figura 1. Croquis o imagen de ubicación de la captación.")
+
+    add_docx_heading(document, "4. Esquema constructivo")
+    if scheme_image is not None:
+        ok = add_docx_picture_from_upload(document, scheme_image, width_inches=3.8)
+        if ok:
+            add_docx_paragraph(document, "Figura 2. Esquema constructivo de la captación.")
+    else:
+        scheme_buf = make_simple_well_scheme(capture)
+        add_docx_picture_from_buffer(document, scheme_buf, width_inches=3.6)
+        add_docx_paragraph(document, "Figura 2. Esquema constructivo referencial de la captación.")
+
+    add_docx_heading(document, "5. Estratigrafía")
+    add_docx_paragraph(document, "La estratigrafía ingresada se presenta como antecedente descriptivo del material perforado o reconocido durante la habilitación.")
+    add_df_docx_table(document, stratigraphy_df)
+
+    add_docx_heading(document, "6. Equipos utilizados")
+    add_docx_table(document, [
+        ["Bomba", equipment.get("bomba")],
+        ["Potencia", equipment.get("potencia")],
+        ["Tubería de extracción", capture.get("tuberia_extraccion")],
+        ["Medidor de caudal", equipment.get("medidor_caudal")],
+        ["Instrumento de nivel", equipment.get("instrumento_nivel")],
+        ["Generador", equipment.get("generador")],
+        ["Observaciones", equipment.get("observaciones")],
+    ])
+
+    add_docx_heading(document, "7. Metodología de prueba de bombeo")
+    add_docx_table(document, [
+        ["Modo de prueba", methodology.get("modo_prueba")],
+        ["Fecha de prueba", methodology.get("fecha_prueba")],
+        ["Hora inicio bombeo", methodology.get("hora_inicio")],
+        ["Hora término bombeo", methodology.get("hora_termino")],
+        ["Duración registrada", fmt(calculations.get("duration_min"), " min", decimals=0)],
+        ["Caudal objetivo", methodology.get("caudal_objetivo")],
+        ["Método de medición de caudal", methodology.get("metodo_caudal")],
+        ["Método de medición de niveles", methodology.get("metodo_nivel")],
+        ["Frecuencia de medición", methodology.get("frecuencia")],
+        ["Observaciones metodológicas", methodology.get("observaciones")],
+    ])
+
+    add_docx_heading(document, "8. Resultados calculados")
+    add_docx_table(document, [
+        ["Caudal promedio", fmt(calculations.get("q_mean"), " L/s")],
+        ["Caudal mínimo", fmt(calculations.get("q_min"), " L/s")],
+        ["Caudal máximo", fmt(calculations.get("q_max"), " L/s")],
+        ["Variación relativa de caudal", fmt(calculations.get("q_var_pct"), " %")],
+        ["Nivel estático inicial", fmt(capture.get("nivel_estatico"), " m")],
+        ["Nivel dinámico final", fmt(calculations.get("final_dynamic"), " m")],
+        ["Abatimiento final", fmt(calculations.get("drawdown"), " m")],
+        ["Caudal específico", fmt(calculations.get("specific_capacity"), " L/s/m")],
+        ["Volumen bombeado", fmt(calculations.get("volume_m3"), " m³")],
+        ["Pendiente final", fmt(calculations.get("slope_cm_h"), " cm/h")],
+        ["Evaluación estabilización", calculations.get("stabilization_message")],
+        ["Recuperación máxima", fmt(calculations.get("recovery_max"), " %")],
+        ["Tiempo a 75% recuperación", fmt(calculations.get("t75"), " min", decimals=0)],
+        ["Tiempo a 90% recuperación", fmt(calculations.get("t90"), " min", decimals=0)],
+        ["Tiempo a 100% recuperación", fmt(calculations.get("t100"), " min", decimals=0)],
+    ])
+
+    add_docx_heading(document, "9. Gráficos")
+    pump_chart = make_line_chart_image(pumping_df, "Tiempo_min", "Nivel_m", "Prueba de gasto constante", "Tiempo (min)", "Nivel/profundidad (m)", invert_y=True)
+    add_docx_picture_from_buffer(document, pump_chart, width_inches=6.2)
+    add_docx_paragraph(document, "Figura 3. Gráfico de prueba a caudal constante.")
+
+    rec_chart = make_line_chart_image(recovery_df, "Tiempo_min", "Nivel_m", "Prueba de recuperación", "Tiempo (min)", "Nivel/profundidad (m)", invert_y=True)
+    add_docx_picture_from_buffer(document, rec_chart, width_inches=6.2)
+    add_docx_paragraph(document, "Figura 4. Gráfico de recuperación de nivel.")
+
+    if recovery_df is not None and "Recuperacion_pct" in recovery_df.columns:
+        rec_pct_chart = make_line_chart_image(recovery_df, "Tiempo_min", "Recuperacion_pct", "Porcentaje de recuperación", "Tiempo (min)", "Recuperación (%)", invert_y=False)
+        add_docx_picture_from_buffer(document, rec_pct_chart, width_inches=6.2)
+        add_docx_paragraph(document, "Figura 5. Porcentaje de recuperación acumulada.")
+
+    add_docx_heading(document, "10. Tabla de prueba de gasto constante")
+    add_df_docx_table(document, pumping_df)
+
+    add_docx_heading(document, "11. Tabla de recuperación")
+    add_df_docx_table(document, recovery_df)
+
+    add_docx_heading(document, "12. Advertencias técnicas")
+    if warnings:
+        for w in warnings:
+            add_docx_paragraph(document, f"• {w}")
+    else:
+        add_docx_paragraph(document, "No se registran advertencias técnicas críticas con los datos ingresados.")
+
+    add_docx_heading(document, "13. Conclusiones")
+    for c in generate_conclusions(capture, calculations, warnings, methodology.get("modo_prueba", "")):
+        add_docx_paragraph(document, f"• {c}")
+
+    add_docx_heading(document, "14. Recomendaciones")
+    for r in generate_recommendations(capture, calculations, warnings):
+        add_docx_paragraph(document, f"• {r}")
+
+    document.add_paragraph()
+    add_docx_table(document, [
+        ["____________________________", "____________________________"],
+        ["Firma consultor", "Firma beneficiario / cliente"],
+    ], first_col_bold=False)
+
+    output = BytesIO()
+    document.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
 # =============================================================================
 # GENERACIÓN PDF
 # =============================================================================
@@ -975,7 +1319,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.2")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.3 - Word/PDF")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
@@ -1238,28 +1582,32 @@ with tabs[6]:
         else:
             st.info("No hay suficientes datos para gráfico de recuperación.")
 
-    st.write("### Exportar")
+    st.write("### Exportar informe")
 
-    # Excel
-    excel_buffer = BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-        pd.DataFrame([company]).to_excel(writer, sheet_name="Empresa", index=False)
-        pd.DataFrame([project]).to_excel(writer, sheet_name="Proyecto", index=False)
-        pd.DataFrame([capture]).to_excel(writer, sheet_name="Captacion", index=False)
-        stratigraphy_df.to_excel(writer, sheet_name="Estratigrafia", index=False)
-        pd.DataFrame([equipment]).to_excel(writer, sheet_name="Equipos", index=False)
-        pd.DataFrame([methodology]).to_excel(writer, sheet_name="Metodologia", index=False)
-        pumping_df.to_excel(writer, sheet_name="Bombeo", index=False)
-        recovery_with_pct.to_excel(writer, sheet_name="Recuperacion", index=False)
-        pd.DataFrame([calculations]).to_excel(writer, sheet_name="Calculos", index=False)
-        pd.DataFrame({"Advertencias": warnings}).to_excel(writer, sheet_name="Advertencias", index=False)
-
-    st.download_button(
-        "Descargar Excel",
-        data=excel_buffer.getvalue(),
-        file_name="prueba_bombeo.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    word_bytes = make_word_docx(
+        company=company,
+        project=project,
+        capture=capture,
+        stratigraphy_df=stratigraphy_df,
+        equipment=equipment,
+        methodology=methodology,
+        pumping_df=pumping_df,
+        recovery_df=recovery_with_pct,
+        calculations=calculations,
+        warnings=warnings,
+        location_image=location_image,
+        scheme_image=scheme_image,
     )
+
+    col_word, col_pdf = st.columns(2)
+
+    with col_word:
+        st.download_button(
+            "Descargar informe Word (.docx)",
+            data=word_bytes,
+            file_name="informe_prueba_bombeo.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
 
     pdf_bytes = make_pdf(
         company=company,
@@ -1276,9 +1624,10 @@ with tabs[6]:
         scheme_image=scheme_image,
     )
 
-    st.download_button(
-        "Generar y descargar PDF profesional",
-        data=pdf_bytes,
-        file_name="informe_prueba_bombeo_profesional.pdf",
-        mime="application/pdf",
-    )
+    with col_pdf:
+        st.download_button(
+            "Descargar informe PDF (.pdf)",
+            data=pdf_bytes,
+            file_name="informe_prueba_bombeo.pdf",
+            mime="application/pdf",
+        )
