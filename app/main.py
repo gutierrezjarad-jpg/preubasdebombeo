@@ -9,6 +9,9 @@ import math
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
