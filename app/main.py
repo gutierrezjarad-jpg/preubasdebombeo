@@ -1638,7 +1638,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.2 - metodología narrativa")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.3 - corrección campos numéricos")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
@@ -1742,6 +1742,40 @@ def init_state_defaults():
     st.session_state.setdefault("recovery_df_loaded", None)
 
 
+def coerce_state_number(key: str, default: float = 0.0):
+    """
+    Evita errores de Streamlit cuando una ficha guardada trae valores numéricos
+    como texto, vacío, None o 'No informado'.
+    """
+    value = st.session_state.get(key, default)
+    try:
+        if value is None:
+            raise ValueError
+        if isinstance(value, str):
+            cleaned = value.strip().replace(",", ".")
+            if cleaned == "" or cleaned.lower() in ["no informado", "dato no informado", "none", "nan"]:
+                raise ValueError
+            value = cleaned
+        value = float(value)
+        if pd.isna(value):
+            raise ValueError
+        st.session_state[key] = value
+    except Exception:
+        st.session_state[key] = float(default)
+
+
+def normalize_numeric_state_fields():
+    """
+    Normaliza todos los campos numéricos antes de construir widgets number_input.
+    """
+    coerce_state_number("capture_profundidad_total", 0.0)
+    coerce_state_number("capture_nivel_estatico", 0.0)
+    coerce_state_number("capture_criba_desde", 0.0)
+    coerce_state_number("capture_criba_hasta", 0.0)
+    coerce_state_number("capture_profundidad_bomba", 0.0)
+
+
+
 def records_to_df(records, fallback_df):
     if isinstance(records, list) and records:
         return pd.DataFrame(records)
@@ -1768,6 +1802,8 @@ def apply_payload_to_state(payload: dict):
         st.session_state["capture_condicion"] = CONDICIONES[0]
     if st.session_state.get("methodology_modo_prueba") not in MODOS_PRUEBA:
         st.session_state["methodology_modo_prueba"] = MODOS_PRUEBA[0]
+
+    normalize_numeric_state_fields()
 
     # Tablas editables
     st.session_state["strat_df_loaded"] = records_to_df(payload.get("stratigraphy"), default_stratigraphy_df())
@@ -1800,6 +1836,7 @@ def build_payload(company, project, capture, equipment, methodology, stratigraph
 
 
 init_state_defaults()
+normalize_numeric_state_fields()
 
 with st.sidebar:
     st.header("Cargar ficha guardada")

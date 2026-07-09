@@ -99,3 +99,11 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Agrega sección 1.3 Características generales de la captación en texto continuo, sin tabla.
 - Mantiene las tablas como síntesis técnica posterior.
 - Renombra la antigua tabla de metodología como Parámetros metodológicos registrados para evitar duplicidad.
+
+
+## Versión 2.5.3 - corrección de campos numéricos
+
+- Corrige error de Streamlit cuando una ficha guardada trae campos numéricos como texto.
+- Normaliza profundidad total, nivel estático, cribas y profundidad de bomba antes de crear los widgets.
+- Si criba desde/hasta viene vacía o como 'No informado', la app la transforma en 0.0.
+- Mantiene la metodología narrativa de la versión 2.5.2.
