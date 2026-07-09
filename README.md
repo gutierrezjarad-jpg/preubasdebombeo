@@ -45,3 +45,21 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Se agrega exportación Word editable (.docx).
 - Se mantiene exportación PDF formal.
 - Ambos informes incluyen datos del proyecto, captación, estratigrafía, equipos, metodología, resultados, gráficos, tablas, advertencias, conclusiones y recomendaciones.
+
+
+## Versión 2.4 - formato de exportación
+
+- Cuerpo de informe en Arial 11 e interlineado 1,5 en Word.
+- Títulos desde Introducción en Arial 13.
+- PDF con tamaño de cuerpo equivalente y mejor ajuste de tablas.
+- Tabla de resultados con texto largo ajustable.
+- Porcentaje de recuperación con dos decimales.
+- Se elimina la sección Advertencias técnicas del Word y PDF exportados.
+- Gráfico de prueba constante más grande.
+
+
+## Versión 2.4.1 - gráfico Word
+
+- Aumenta el tamaño del gráfico de prueba constante solo en la exportación Word.
+- Mantiene el PDF sin cambios.
+- Ajusta levemente los márgenes laterales del Word para evitar recorte del gráfico.

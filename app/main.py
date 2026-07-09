@@ -404,29 +404,41 @@ def draw_header_logo(canvas, x, y, max_w, max_h):
 def get_styles():
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(
-        name="CoverTitle", parent=styles["Title"], fontSize=18, leading=22,
-        alignment=TA_CENTER, textColor=colors.HexColor("#006b2e"), spaceAfter=14
+        name="CoverTitle", parent=styles["Title"], fontName="Helvetica-Bold",
+        fontSize=18, leading=22, alignment=TA_CENTER,
+        textColor=colors.HexColor("#006b2e"), spaceAfter=14
     ))
     styles.add(ParagraphStyle(
-        name="CoverSubtitle", parent=styles["Normal"], fontSize=12, leading=15,
-        alignment=TA_CENTER, spaceAfter=6
+        name="CoverSubtitle", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=11, leading=16.5, alignment=TA_CENTER, spaceAfter=6
     ))
     styles.add(ParagraphStyle(
-        name="SectionTitle", parent=styles["Heading2"], fontSize=12.5, leading=15,
-        textColor=colors.HexColor("#006b2e"), spaceBefore=10, spaceAfter=7
+        name="SectionTitle", parent=styles["Heading2"], fontName="Helvetica-Bold",
+        fontSize=13, leading=19.5, textColor=colors.HexColor("#006b2e"),
+        spaceBefore=12, spaceAfter=8
     ))
     styles.add(ParagraphStyle(
-        name="Body", parent=styles["Normal"], fontSize=8.7, leading=11.2, alignment=TA_LEFT
+        name="Body", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=11, leading=16.5, alignment=TA_LEFT
     ))
     styles.add(ParagraphStyle(
-        name="Small", parent=styles["Normal"], fontSize=7.2, leading=9.2
+        name="TableBody", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=8.2, leading=10.5, alignment=TA_LEFT
     ))
     styles.add(ParagraphStyle(
-        name="FigureCaption", parent=styles["Normal"], fontSize=7.5, leading=9.4,
-        alignment=TA_CENTER, textColor=colors.HexColor("#555555"), spaceAfter=6
+        name="TableSmall", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=7.0, leading=8.6, alignment=TA_LEFT
+    ))
+    styles.add(ParagraphStyle(
+        name="Small", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=8.5, leading=12.75
+    ))
+    styles.add(ParagraphStyle(
+        name="FigureCaption", parent=styles["Normal"], fontName="Helvetica",
+        fontSize=8.5, leading=12.75, alignment=TA_CENTER,
+        textColor=colors.HexColor("#555555"), spaceAfter=7
     ))
     return styles
-
 
 def report_header_footer(canvas, doc, company: dict):
     canvas.saveState()
@@ -467,21 +479,25 @@ def report_header_footer(canvas, doc, company: dict):
 
     canvas.restoreState()
 
-def make_table(data, col_widths=None, header=False, font_size=7.2, first_col_bold=True):
+def make_table(data, col_widths=None, header=False, font_size=8.2, first_col_bold=True):
     wrapped = []
     styles = get_styles()
-    for row in data:
-        wrapped.append([Paragraph(safe_text(cell, ""), styles["Small"]) for cell in row])
+    table_style = styles["TableBody"]
 
-    table = Table(wrapped, colWidths=col_widths)
+    for row in data:
+        wrapped.append([Paragraph(safe_text(cell, ""), table_style) for cell in row])
+
+    table = Table(wrapped, colWidths=col_widths, repeatRows=1 if header else 0)
     style = [
         ("GRID", (0, 0), (-1, -1), 0.28, colors.HexColor("#999999")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), font_size),
+        ("LEADING", (0, 0), (-1, -1), font_size * 1.25),
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]
     if first_col_bold:
         style += [
@@ -496,25 +512,43 @@ def make_table(data, col_widths=None, header=False, font_size=7.2, first_col_bol
     table.setStyle(TableStyle(style))
     return table
 
-
-def df_to_pdf_table(df: pd.DataFrame, max_rows: int = 55, font_size: float = 6.0):
+def df_to_pdf_table(df: pd.DataFrame, max_rows: int = 55, font_size: float = 7.0):
     styles = get_styles()
     if df is None or df.empty:
         return Paragraph("Sin datos ingresados.", styles["Body"])
 
     show = df.copy().head(max_rows).fillna("")
+
+    # Formato específico: recuperación con dos decimales.
+    if "Recuperacion_pct" in show.columns:
+        show["Recuperacion_pct"] = pd.to_numeric(show["Recuperacion_pct"], errors="coerce").map(
+            lambda x: "" if pd.isna(x) else f"{x:.2f}"
+        )
+
+    # Formato numérico para evitar decimales excesivos.
+    for col in show.columns:
+        if col != "Recuperacion_pct":
+            numeric = pd.to_numeric(show[col], errors="coerce")
+            if numeric.notna().sum() > 0 and numeric.notna().sum() >= len(show) * 0.5:
+                show[col] = numeric.map(lambda x: "" if pd.isna(x) else f"{x:.3f}".rstrip("0").rstrip("."))
+
     data = [list(show.columns)] + show.astype(str).values.tolist()
 
-    # Ancho flexible para A4 normal
     ncols = max(1, len(data[0]))
     col_width = min(16.5 / ncols, 4.5) * cm
 
-    table = Table(data, colWidths=[col_width] * ncols, repeatRows=1)
+    wrapped_data = []
+    for row in data:
+        wrapped_data.append([Paragraph(safe_text(cell, ""), styles["TableSmall"]) for cell in row])
+
+    table = Table(wrapped_data, colWidths=[col_width] * ncols, repeatRows=1)
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#999999")),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d9ead3")),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), font_size),
+        ("LEADING", (0, 0), (-1, -1), font_size * 1.25),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
         ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
@@ -522,7 +556,6 @@ def df_to_pdf_table(df: pd.DataFrame, max_rows: int = 55, font_size: float = 6.0
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
     return table
-
 
 def uploaded_image_flowable(uploaded_file, width_cm: float = 15.5, height_cm: float = 8.5):
     """
@@ -629,15 +662,24 @@ def make_simple_well_scheme(capture: dict):
 def add_docx_heading(document, text_value: str, level: int = 1):
     heading = document.add_heading(text_value, level=level)
     for run in heading.runs:
+        run.font.name = "Arial"
+        run.font.size = Pt(13)
+        run.bold = True
         run.font.color.rgb = RGBColor(0, 107, 46)
+    heading.paragraph_format.line_spacing = 1.5
+    heading.paragraph_format.space_before = Pt(8)
+    heading.paragraph_format.space_after = Pt(6)
     return heading
 
 
 def add_docx_paragraph(document, text_value: str):
     p = document.add_paragraph()
     p.style = document.styles["Normal"]
+    p.paragraph_format.line_spacing = 1.5
+    p.paragraph_format.space_after = Pt(6)
     run = p.add_run(safe_text(text_value, ""))
-    run.font.size = Pt(9)
+    run.font.name = "Arial"
+    run.font.size = Pt(11)
     return p
 
 
@@ -648,35 +690,54 @@ def add_docx_table(document, rows: list[list], first_col_bold: bool = True):
     table = document.add_table(rows=len(rows), cols=len(rows[0]))
     table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = True
 
     for i, row in enumerate(rows):
         for j, value in enumerate(row):
             cell = table.cell(i, j)
             cell.text = safe_text(value, "")
             for p in cell.paragraphs:
+                p.paragraph_format.line_spacing = 1.15
+                p.paragraph_format.space_after = Pt(0)
                 for run in p.runs:
-                    run.font.size = Pt(8)
+                    run.font.name = "Arial"
+                    run.font.size = Pt(9)
                     if first_col_bold and j == 0:
                         run.bold = True
     document.add_paragraph()
     return table
-
 
 def add_df_docx_table(document, df: pd.DataFrame, max_rows: int = 80):
     if df is None or df.empty:
         add_docx_paragraph(document, "Sin datos ingresados.")
         return
 
-    show = df.head(max_rows).fillna("")
+    show = df.head(max_rows).fillna("").copy()
+
+    if "Recuperacion_pct" in show.columns:
+        show["Recuperacion_pct"] = pd.to_numeric(show["Recuperacion_pct"], errors="coerce").map(
+            lambda x: "" if pd.isna(x) else f"{x:.2f}"
+        )
+
+    for col in show.columns:
+        if col != "Recuperacion_pct":
+            numeric = pd.to_numeric(show[col], errors="coerce")
+            if numeric.notna().sum() > 0 and numeric.notna().sum() >= len(show) * 0.5:
+                show[col] = numeric.map(lambda x: "" if pd.isna(x) else f"{x:.3f}".rstrip("0").rstrip("."))
+
     table = document.add_table(rows=1, cols=len(show.columns))
     table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = True
 
     hdr = table.rows[0].cells
     for j, col in enumerate(show.columns):
         hdr[j].text = str(col)
         for p in hdr[j].paragraphs:
+            p.paragraph_format.line_spacing = 1.0
+            p.paragraph_format.space_after = Pt(0)
             for run in p.runs:
+                run.font.name = "Arial"
                 run.bold = True
                 run.font.size = Pt(7)
 
@@ -685,11 +746,13 @@ def add_df_docx_table(document, df: pd.DataFrame, max_rows: int = 80):
         for j, col in enumerate(show.columns):
             cells[j].text = str(row[col])
             for p in cells[j].paragraphs:
+                p.paragraph_format.line_spacing = 1.0
+                p.paragraph_format.space_after = Pt(0)
                 for run in p.runs:
+                    run.font.name = "Arial"
                     run.font.size = Pt(7)
 
     document.add_paragraph()
-
 
 def add_docx_picture_from_buffer(document, image_buffer: BytesIO | None, width_inches: float = 6.2):
     if image_buffer is None:
@@ -733,12 +796,20 @@ def make_word_docx(
     """
     document = Document()
 
+    # Formato base Word: Arial 11, interlineado 1,5 en cuerpo.
+    normal_style = document.styles["Normal"]
+    normal_style.font.name = "Arial"
+    normal_style.font.size = Pt(11)
+    normal_style.paragraph_format.line_spacing = 1.5
+    normal_style.paragraph_format.space_after = Pt(6)
+
+
     # Márgenes
     section = document.sections[0]
     section.top_margin = Inches(0.65)
     section.bottom_margin = Inches(0.65)
-    section.left_margin = Inches(0.7)
-    section.right_margin = Inches(0.7)
+    section.left_margin = Inches(0.45)
+    section.right_margin = Inches(0.45)
 
     # Encabezado con logo pequeño
     header = section.header
@@ -915,16 +986,16 @@ def make_word_docx(
 
     add_docx_heading(document, "9. Gráficos")
     pump_chart = make_line_chart_image(pumping_df, "Tiempo_min", "Nivel_m", "Prueba de gasto constante", "Tiempo (min)", "Nivel/profundidad (m)", invert_y=True)
-    add_docx_picture_from_buffer(document, pump_chart, width_inches=6.2)
+    add_docx_picture_from_buffer(document, pump_chart, width_inches=7.45)
     add_docx_paragraph(document, "Figura 3. Gráfico de prueba a caudal constante.")
 
     rec_chart = make_line_chart_image(recovery_df, "Tiempo_min", "Nivel_m", "Prueba de recuperación", "Tiempo (min)", "Nivel/profundidad (m)", invert_y=True)
-    add_docx_picture_from_buffer(document, rec_chart, width_inches=6.2)
+    add_docx_picture_from_buffer(document, rec_chart, width_inches=6.6)
     add_docx_paragraph(document, "Figura 4. Gráfico de recuperación de nivel.")
 
     if recovery_df is not None and "Recuperacion_pct" in recovery_df.columns:
         rec_pct_chart = make_line_chart_image(recovery_df, "Tiempo_min", "Recuperacion_pct", "Porcentaje de recuperación", "Tiempo (min)", "Recuperación (%)", invert_y=False)
-        add_docx_picture_from_buffer(document, rec_pct_chart, width_inches=6.2)
+        add_docx_picture_from_buffer(document, rec_pct_chart, width_inches=6.6)
         add_docx_paragraph(document, "Figura 5. Porcentaje de recuperación acumulada.")
 
     add_docx_heading(document, "10. Tabla de prueba de gasto constante")
@@ -933,18 +1004,11 @@ def make_word_docx(
     add_docx_heading(document, "11. Tabla de recuperación")
     add_df_docx_table(document, recovery_df)
 
-    add_docx_heading(document, "12. Advertencias técnicas")
-    if warnings:
-        for w in warnings:
-            add_docx_paragraph(document, f"• {w}")
-    else:
-        add_docx_paragraph(document, "No se registran advertencias técnicas críticas con los datos ingresados.")
-
-    add_docx_heading(document, "13. Conclusiones")
+    add_docx_heading(document, "12. Conclusiones")
     for c in generate_conclusions(capture, calculations, warnings, methodology.get("modo_prueba", "")):
         add_docx_paragraph(document, f"• {c}")
 
-    add_docx_heading(document, "14. Recomendaciones")
+    add_docx_heading(document, "13. Recomendaciones")
     for r in generate_recommendations(capture, calculations, warnings):
         add_docx_paragraph(document, f"• {r}")
 
@@ -1252,7 +1316,7 @@ def make_pdf(
         "Tiempo (min)", "Nivel/profundidad (m)",
         invert_y=True
     )
-    story.append(image_flowable(pump_chart))
+    story.append(image_flowable(pump_chart, width_cm=18.0, height_cm=10.0))
     story.append(Paragraph("Figura 3. Gráfico de prueba a caudal constante.", styles["FigureCaption"]))
 
     rec_chart = make_line_chart_image(
@@ -1284,21 +1348,14 @@ def make_pdf(
     story.append(df_to_pdf_table(recovery_df, max_rows=70, font_size=5.8))
 
     # -------------------------------------------------------------------------
-    # 12. ADVERTENCIAS, CONCLUSIONES Y RECOMENDACIONES
+    # 12. CONCLUSIONES Y RECOMENDACIONES
     # -------------------------------------------------------------------------
-    story.append(Paragraph("12. Advertencias técnicas", styles["SectionTitle"]))
-    if warnings:
-        for warning in warnings:
-            story.append(Paragraph(f"• {warning}", styles["Body"]))
-    else:
-        story.append(Paragraph("No se registran advertencias técnicas críticas con los datos ingresados.", styles["Body"]))
-
-    story.append(Paragraph("13. Conclusiones", styles["SectionTitle"]))
+    story.append(Paragraph("12. Conclusiones", styles["SectionTitle"]))
     conclusions = generate_conclusions(capture, calculations, warnings, methodology.get("modo_prueba", ""))
     for c in conclusions:
         story.append(Paragraph(f"• {c}", styles["Body"]))
 
-    story.append(Paragraph("14. Recomendaciones", styles["SectionTitle"]))
+    story.append(Paragraph("13. Recomendaciones", styles["SectionTitle"]))
     recs = generate_recommendations(capture, calculations, warnings)
     for r in recs:
         story.append(Paragraph(f"• {r}", styles["Body"]))
@@ -1319,7 +1376,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.3 - Word/PDF")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.4.1 - gráfico Word")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
