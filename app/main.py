@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 from io import BytesIO
 import textwrap
+import json
 
 import numpy as np
 import pandas as pd
@@ -1431,17 +1432,190 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.4.2 - firma profesional")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5 - guardar y cargar datos")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
 
+# =============================================================================
+# GUARDAR / CARGAR FICHAS DE DATOS
+# =============================================================================
+
+TIPOS_CAPTACION = ["Pozo profundo", "Noria / pozo de gran diámetro", "Puntera", "Dren", "Otro"]
+CONDICIONES = ["No informado", "No surgente", "Surgente"]
+MODOS_PRUEBA = ["Ensayo abreviado 180 min + recuperación", "DGA estándar 24 h", "Otro"]
+
+def default_stratigraphy_df():
+    return pd.DataFrame({
+        "Desde_m": [0.0, 1.0, 5.0],
+        "Hasta_m": [1.0, 5.0, 12.0],
+        "Descripcion": ["Suelo vegetal", "Material fino / arcilloso", "Arena / grava / material permeable"],
+        "Observacion": ["", "", ""],
+    })
+
+
+def default_pumping_df(mode: str):
+    if "24 h" in safe_text(mode, ""):
+        default_times = [0,1,2,3,4,5,10,20,30,60,120,180,240,300,360,420,480,540,600,660,720,780,840,900,960,1020,1080,1140,1200,1260,1320,1380,1440]
+    else:
+        default_times = [0,1,2,3,4,5,10,15,20,30,45,60,90,120,150,180]
+    return pd.DataFrame({
+        "Fecha": [""] * len(default_times),
+        "Hora": [""] * len(default_times),
+        "Tiempo_min": default_times,
+        "Nivel_m": [np.nan] * len(default_times),
+        "Caudal_L_s": [np.nan] * len(default_times),
+        "Observacion": [""] * len(default_times),
+    })
+
+
+def default_recovery_df():
+    default_rec_times = [0,1,2,3,4,5,10,15,20,30,45,60,90,120,150,180]
+    return pd.DataFrame({
+        "Fecha": [""] * len(default_rec_times),
+        "Hora": [""] * len(default_rec_times),
+        "Tiempo_min": default_rec_times,
+        "Nivel_m": [np.nan] * len(default_rec_times),
+        "Observacion": [""] * len(default_rec_times),
+    })
+
+
+def init_state_defaults():
+    defaults = {
+        "company_empresa": COMPANY_DEFAULTS["empresa"],
+        "company_direccion": COMPANY_DEFAULTS["direccion"],
+        "company_celular": COMPANY_DEFAULTS["celular"],
+        "company_correo": COMPANY_DEFAULTS["correo"],
+        "project_nombre_proyecto": "Prueba de bombeo",
+        "project_identificacion": "Captación subterránea",
+        "project_cliente": "",
+        "project_sector": "",
+        "project_comuna": "",
+        "project_region": "Región del Biobío",
+        "project_consultor": "",
+        "project_observaciones": "",
+        "capture_tipo": "Pozo profundo",
+        "capture_condicion": "No informado",
+        "capture_utm_norte": "",
+        "capture_utm_este": "",
+        "capture_datum": "SIRGAS WGS84 / WGS84",
+        "capture_huso": "18S",
+        "capture_profundidad_total": 0.0,
+        "capture_diametro_perforacion": "",
+        "capture_diametro_entubacion": "",
+        "capture_material_tuberia": "",
+        "capture_altura_sobre_terreno": "",
+        "capture_nivel_estatico": 0.0,
+        "capture_criba_desde": 0.0,
+        "capture_criba_hasta": 0.0,
+        "capture_tuberia_ciega": "",
+        "capture_profundidad_bomba": 0.0,
+        "capture_tuberia_extraccion": "",
+        "capture_observaciones": "",
+        "equipment_bomba": "",
+        "equipment_potencia": "",
+        "equipment_medidor_caudal": "",
+        "equipment_instrumento_nivel": "",
+        "equipment_generador": "",
+        "equipment_observaciones": "",
+        "methodology_modo_prueba": "Ensayo abreviado 180 min + recuperación",
+        "methodology_fecha_prueba": datetime.now().strftime("%d-%m-%Y"),
+        "methodology_hora_inicio": "",
+        "methodology_hora_termino": "",
+        "methodology_caudal_objetivo": "",
+        "methodology_metodo_caudal": "Caudalímetro",
+        "methodology_metodo_nivel": "Pozómetro",
+        "methodology_frecuencia": "",
+        "methodology_observaciones": "",
+        "data_version": 0,
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+    st.session_state.setdefault("strat_df_loaded", default_stratigraphy_df())
+    st.session_state.setdefault("pumping_df_loaded", None)
+    st.session_state.setdefault("recovery_df_loaded", None)
+
+
+def records_to_df(records, fallback_df):
+    if isinstance(records, list) and records:
+        return pd.DataFrame(records)
+    return fallback_df
+
+
+def apply_payload_to_state(payload: dict):
+    sections = {
+        "company": "company",
+        "project": "project",
+        "capture": "capture",
+        "equipment": "equipment",
+        "methodology": "methodology",
+    }
+    for section_name, prefix in sections.items():
+        values = payload.get(section_name, {})
+        if isinstance(values, dict):
+            for field, value in values.items():
+                st.session_state[f"{prefix}_{field}"] = value
+
+    if st.session_state.get("capture_tipo") not in TIPOS_CAPTACION:
+        st.session_state["capture_tipo"] = TIPOS_CAPTACION[0]
+    if st.session_state.get("capture_condicion") not in CONDICIONES:
+        st.session_state["capture_condicion"] = CONDICIONES[0]
+    if st.session_state.get("methodology_modo_prueba") not in MODOS_PRUEBA:
+        st.session_state["methodology_modo_prueba"] = MODOS_PRUEBA[0]
+
+    # Tablas editables
+    st.session_state["strat_df_loaded"] = records_to_df(payload.get("stratigraphy"), default_stratigraphy_df())
+    st.session_state["pumping_df_loaded"] = records_to_df(payload.get("pumping"), default_pumping_df(st.session_state.get("methodology_modo_prueba", "")))
+    st.session_state["recovery_df_loaded"] = records_to_df(payload.get("recovery"), default_recovery_df())
+    st.session_state["data_version"] = int(st.session_state.get("data_version", 0)) + 1
+
+
+def df_to_records_for_json(df: pd.DataFrame):
+    if df is None or df.empty:
+        return []
+    clean = df.copy()
+    clean = clean.replace({np.nan: None})
+    return clean.to_dict("records")
+
+
+def build_payload(company, project, capture, equipment, methodology, stratigraphy_df, pumping_df, recovery_df):
+    return {
+        "version": "2.5",
+        "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "company": company,
+        "project": project,
+        "capture": capture,
+        "equipment": equipment,
+        "methodology": methodology,
+        "stratigraphy": df_to_records_for_json(stratigraphy_df),
+        "pumping": df_to_records_for_json(pumping_df),
+        "recovery": df_to_records_for_json(recovery_df),
+    }
+
+
+init_state_defaults()
+
 with st.sidebar:
+    st.header("Cargar ficha guardada")
+    saved_json = st.file_uploader("Subir ficha de datos (.json)", type=["json"], key="saved_json_loader")
+    if st.button("Aplicar datos guardados"):
+        if saved_json is None:
+            st.warning("Primero sube una ficha .json guardada.")
+        else:
+            try:
+                payload = json.loads(saved_json.getvalue().decode("utf-8"))
+                apply_payload_to_state(payload)
+                st.success("Datos cargados. La app se actualizará con la ficha guardada.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo cargar la ficha: {exc}")
+
+    st.divider()
     st.header("Configuración empresa")
-    empresa = st.text_input("Empresa", COMPANY_DEFAULTS["empresa"])
-    direccion = st.text_area("Dirección", COMPANY_DEFAULTS["direccion"])
-    celular = st.text_input("Celular", COMPANY_DEFAULTS["celular"])
-    correo = st.text_input("Correo", COMPANY_DEFAULTS["correo"])
+    empresa = st.text_input("Empresa", key="company_empresa")
+    direccion = st.text_area("Dirección", key="company_direccion")
+    celular = st.text_input("Celular", key="company_celular")
+    correo = st.text_input("Correo", key="company_correo")
     st.caption("Estos datos se insertan automáticamente en portada y pie de página.")
 
     st.header("Firma")
@@ -1450,7 +1624,7 @@ with st.sidebar:
         type=["png"],
         key="signature_image"
     )
-    st.caption("La firma se insertará al final del Word y PDF, sobre el nombre David Gutiérrez Jara.")
+    st.caption("La firma se insertará al final del Word y PDF. Por seguridad, la firma no se guarda dentro de la ficha JSON.")
 
 company = {"empresa": empresa, "direccion": direccion, "celular": celular, "correo": correo}
 
@@ -1468,15 +1642,15 @@ with tabs[0]:
     st.subheader("Datos del proyecto")
     col1, col2 = st.columns(2)
     with col1:
-        nombre_proyecto = st.text_input("Nombre del proyecto", "Prueba de bombeo")
-        identificacion = st.text_input("Identificación de captación", "Captación subterránea")
-        cliente = st.text_input("Cliente / beneficiario")
-        sector = st.text_input("Sector / predio")
+        nombre_proyecto = st.text_input("Nombre del proyecto", key="project_nombre_proyecto")
+        identificacion = st.text_input("Identificación de captación", key="project_identificacion")
+        cliente = st.text_input("Cliente / beneficiario", key="project_cliente")
+        sector = st.text_input("Sector / predio", key="project_sector")
     with col2:
-        comuna = st.text_input("Comuna")
-        region = st.text_input("Región", "Región del Biobío")
-        consultor = st.text_input("Consultor responsable")
-        observaciones_proyecto = st.text_area("Observaciones generales")
+        comuna = st.text_input("Comuna", key="project_comuna")
+        region = st.text_input("Región", key="project_region")
+        consultor = st.text_input("Consultor responsable", key="project_consultor")
+        observaciones_proyecto = st.text_area("Observaciones generales", key="project_observaciones")
 
     project = {
         "nombre_proyecto": nombre_proyecto,
@@ -1494,29 +1668,29 @@ with tabs[1]:
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        tipo = st.selectbox("Tipo de captación", ["Pozo profundo", "Noria / pozo de gran diámetro", "Puntera", "Dren", "Otro"])
-        condicion = st.selectbox("Condición", ["No informado", "No surgente", "Surgente"])
-        utm_norte = st.text_input("UTM Norte")
-        utm_este = st.text_input("UTM Este")
-        datum = st.text_input("Datum", "SIRGAS WGS84 / WGS84")
-        huso = st.text_input("Huso", "18S")
+        tipo = st.selectbox("Tipo de captación", TIPOS_CAPTACION, key="capture_tipo")
+        condicion = st.selectbox("Condición", CONDICIONES, key="capture_condicion")
+        utm_norte = st.text_input("UTM Norte", key="capture_utm_norte")
+        utm_este = st.text_input("UTM Este", key="capture_utm_este")
+        datum = st.text_input("Datum", key="capture_datum")
+        huso = st.text_input("Huso", key="capture_huso")
 
     with col2:
-        profundidad_total = st.number_input("Profundidad total (m)", min_value=0.0, step=0.1, value=0.0)
-        diametro_perforacion = st.text_input("Diámetro perforación")
-        diametro_entubacion = st.text_input("Diámetro entubación")
-        material_tuberia = st.text_input("Material / espesor tubería")
-        altura_sobre_terreno = st.text_input("Altura tubería sobre terreno")
-        nivel_estatico = st.number_input("Nivel estático inicial (m)", min_value=-50.0, step=0.01, value=0.0)
+        profundidad_total = st.number_input("Profundidad total (m)", min_value=0.0, step=0.1, key="capture_profundidad_total")
+        diametro_perforacion = st.text_input("Diámetro perforación", key="capture_diametro_perforacion")
+        diametro_entubacion = st.text_input("Diámetro entubación", key="capture_diametro_entubacion")
+        material_tuberia = st.text_input("Material / espesor tubería", key="capture_material_tuberia")
+        altura_sobre_terreno = st.text_input("Altura tubería sobre terreno", key="capture_altura_sobre_terreno")
+        nivel_estatico = st.number_input("Nivel estático inicial (m)", min_value=-50.0, step=0.01, key="capture_nivel_estatico")
 
     with col3:
         st.caption("Si no tienes información de cribas o tramo filtrante, deja estos campos en 0.")
-        criba_desde = st.number_input("Criba desde (m)", min_value=0.0, step=0.1, value=0.0)
-        criba_hasta = st.number_input("Criba hasta (m)", min_value=0.0, step=0.1, value=0.0)
-        tuberia_ciega = st.text_input("Tramos tubería ciega")
-        profundidad_bomba = st.number_input("Profundidad bomba (m)", min_value=0.0, step=0.1, value=0.0)
-        tuberia_extraccion = st.text_input("Tubería extracción/succión")
-        observaciones_captacion = st.text_area("Observaciones de habilitación")
+        criba_desde = st.number_input("Criba desde (m)", min_value=0.0, step=0.1, key="capture_criba_desde")
+        criba_hasta = st.number_input("Criba hasta (m)", min_value=0.0, step=0.1, key="capture_criba_hasta")
+        tuberia_ciega = st.text_input("Tramos tubería ciega", key="capture_tuberia_ciega")
+        profundidad_bomba = st.number_input("Profundidad bomba (m)", min_value=0.0, step=0.1, key="capture_profundidad_bomba")
+        tuberia_extraccion = st.text_input("Tubería extracción/succión", key="capture_tuberia_extraccion")
+        observaciones_captacion = st.text_area("Observaciones de habilitación", key="capture_observaciones")
 
     st.write("#### Imágenes opcionales")
     location_image = st.file_uploader("Cargar croquis o imagen de ubicación", type=["jpg", "jpeg", "png"], key="location_image")
@@ -1546,35 +1720,34 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Estratigrafía")
     st.info("Ingresa los tramos reconocidos/perforados. Esta tabla se incluirá en el informe.")
-    default_strat = pd.DataFrame({
-        "Desde_m": [0.0, 1.0, 5.0],
-        "Hasta_m": [1.0, 5.0, 12.0],
-        "Descripcion": ["Suelo vegetal", "Material fino / arcilloso", "Arena / grava / material permeable"],
-        "Observacion": ["", "", ""],
-    })
-    stratigraphy_df = st.data_editor(default_strat, num_rows="dynamic", use_container_width=True, key="strat_editor")
+    stratigraphy_df = st.data_editor(
+        st.session_state.get("strat_df_loaded", default_stratigraphy_df()),
+        num_rows="dynamic",
+        use_container_width=True,
+        key=f"strat_editor_{st.session_state.get('data_version', 0)}",
+    )
 
 with tabs[3]:
     st.subheader("Equipos utilizados y metodología")
     col1, col2 = st.columns(2)
     with col1:
-        bomba = st.text_input("Bomba: tipo/marca/modelo")
-        potencia = st.text_input("Potencia")
-        medidor_caudal = st.text_input("Medidor de caudal")
-        instrumento_nivel = st.text_input("Instrumento de medición de nivel")
-        generador = st.text_input("Generador / fuente eléctrica")
-        observaciones_equipos = st.text_area("Observaciones de equipos")
+        bomba = st.text_input("Bomba: tipo/marca/modelo", key="equipment_bomba")
+        potencia = st.text_input("Potencia", key="equipment_potencia")
+        medidor_caudal = st.text_input("Medidor de caudal", key="equipment_medidor_caudal")
+        instrumento_nivel = st.text_input("Instrumento de medición de nivel", key="equipment_instrumento_nivel")
+        generador = st.text_input("Generador / fuente eléctrica", key="equipment_generador")
+        observaciones_equipos = st.text_area("Observaciones de equipos", key="equipment_observaciones")
 
     with col2:
-        modo_prueba = st.selectbox("Modo de prueba", ["Ensayo abreviado 180 min + recuperación", "DGA estándar 24 h", "Otro"])
-        fecha_prueba = st.text_input("Fecha de prueba", datetime.now().strftime("%d-%m-%Y"))
-        hora_inicio = st.text_input("Hora inicio bombeo")
-        hora_termino = st.text_input("Hora término bombeo")
-        caudal_objetivo = st.text_input("Caudal objetivo")
-        metodo_caudal = st.text_input("Método medición caudal", "Caudalímetro")
-        metodo_nivel = st.text_input("Método medición niveles", "Pozómetro")
-        frecuencia = st.text_input("Frecuencia de medición")
-        observaciones_metodologia = st.text_area("Observaciones metodológicas")
+        modo_prueba = st.selectbox("Modo de prueba", MODOS_PRUEBA, key="methodology_modo_prueba")
+        fecha_prueba = st.text_input("Fecha de prueba", key="methodology_fecha_prueba")
+        hora_inicio = st.text_input("Hora inicio bombeo", key="methodology_hora_inicio")
+        hora_termino = st.text_input("Hora término bombeo", key="methodology_hora_termino")
+        caudal_objetivo = st.text_input("Caudal objetivo", key="methodology_caudal_objetivo")
+        metodo_caudal = st.text_input("Método medición caudal", key="methodology_metodo_caudal")
+        metodo_nivel = st.text_input("Método medición niveles", key="methodology_metodo_nivel")
+        frecuencia = st.text_input("Frecuencia de medición", key="methodology_frecuencia")
+        observaciones_metodologia = st.text_area("Observaciones metodológicas", key="methodology_observaciones")
 
     equipment = {
         "bomba": bomba,
@@ -1600,35 +1773,27 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("Prueba de gasto constante")
     st.warning("El sistema no rellena datos faltantes. Solo calcula con datos ingresados/importados.")
-
-    if "24 h" in locals().get("modo_prueba", ""):
-        default_times = [0,1,2,3,4,5,10,20,30,60,120,180,240,300,360,420,480,540,600,660,720,780,840,900,960,1020,1080,1140,1200,1260,1320,1380,1440]
-    else:
-        default_times = [0,1,2,3,4,5,10,15,20,30,45,60,90,120,150,180]
-
-    default_pumping = pd.DataFrame({
-        "Fecha": [""] * len(default_times),
-        "Hora": [""] * len(default_times),
-        "Tiempo_min": default_times,
-        "Nivel_m": [np.nan] * len(default_times),
-        "Caudal_L_s": [np.nan] * len(default_times),
-        "Observacion": [""] * len(default_times),
-    })
-
-    pumping_df = st.data_editor(default_pumping, num_rows="dynamic", use_container_width=True, key="pumping_editor")
+    pumping_base = st.session_state.get("pumping_df_loaded")
+    if pumping_base is None:
+        pumping_base = default_pumping_df(st.session_state.get("methodology_modo_prueba", ""))
+    pumping_df = st.data_editor(
+        pumping_base,
+        num_rows="dynamic",
+        use_container_width=True,
+        key=f"pumping_editor_{st.session_state.get('data_version', 0)}",
+    )
 
 with tabs[5]:
     st.subheader("Prueba de recuperación")
-    default_rec_times = [0,1,2,3,4,5,10,15,20,30,45,60,90,120,150,180]
-    default_recovery = pd.DataFrame({
-        "Fecha": [""] * len(default_rec_times),
-        "Hora": [""] * len(default_rec_times),
-        "Tiempo_min": default_rec_times,
-        "Nivel_m": [np.nan] * len(default_rec_times),
-        "Observacion": [""] * len(default_rec_times),
-    })
-
-    recovery_df = st.data_editor(default_recovery, num_rows="dynamic", use_container_width=True, key="recovery_editor")
+    recovery_base = st.session_state.get("recovery_df_loaded")
+    if recovery_base is None:
+        recovery_base = default_recovery_df()
+    recovery_df = st.data_editor(
+        recovery_base,
+        num_rows="dynamic",
+        use_container_width=True,
+        key=f"recovery_editor_{st.session_state.get('data_version', 0)}",
+    )
 
 with tabs[6]:
     st.subheader("Resultados, gráficos e informe")
@@ -1665,7 +1830,8 @@ with tabs[6]:
     else:
         st.warning(calculations.get("stabilization_message"))
 
-    st.write("### Advertencias técnicas")
+    st.write("### Advertencias técnicas internas")
+    st.caption("Estas advertencias se muestran en la app para control técnico, pero no se incluyen como sección en el Word/PDF.")
     if warnings:
         for w in warnings:
             st.warning(w)
@@ -1701,6 +1867,18 @@ with tabs[6]:
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("No hay suficientes datos para gráfico de recuperación.")
+
+    st.write("### Guardar ficha de datos")
+    st.caption("Descarga esta ficha .json para recuperar la información después de actualizar la app o para reutilizar datos del mismo usuario/captación.")
+    payload = build_payload(company, project, capture, equipment, methodology, stratigraphy_df, pumping_df, recovery_df)
+    json_bytes = json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    ficha_name = safe_text(project.get("cliente"), "ficha").lower().replace(" ", "_")
+    st.download_button(
+        "Guardar ficha de datos (.json)",
+        data=json_bytes,
+        file_name=f"ficha_prueba_bombeo_{ficha_name}.json",
+        mime="application/json",
+    )
 
     st.write("### Exportar informe")
 

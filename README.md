@@ -72,3 +72,11 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Elimina firma del beneficiario/cliente.
 - Inserta la firma del profesional si se sube imagen PNG.
 - Texto final: David Gutiérrez Jara, Ingeniero Agrónomo.
+
+
+## Versión 2.5 - guardar y cargar datos
+
+- Agrega guardado de ficha de datos en formato JSON.
+- Permite cargar una ficha JSON para autocompletar empresa, proyecto, captación, equipos, metodología, estratigrafía, bombeo y recuperación.
+- La ficha sirve para recuperar información después de actualizar la aplicación.
+- Por seguridad, la imagen de firma no se guarda dentro de la ficha JSON; debe subirse nuevamente si se requiere insertar en informes.
