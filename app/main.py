@@ -789,6 +789,7 @@ def make_word_docx(
     warnings: list[str],
     location_image=None,
     scheme_image=None,
+    signature_image=None,
 ) -> bytes:
     """
     Genera informe Word editable (.docx) con la misma lógica del PDF.
@@ -1013,10 +1014,39 @@ def make_word_docx(
         add_docx_paragraph(document, f"• {r}")
 
     document.add_paragraph()
-    add_docx_table(document, [
-        ["____________________________", "____________________________"],
-        ["Firma consultor", "Firma beneficiario / cliente"],
-    ], first_col_bold=False)
+    sig_title = document.add_paragraph()
+    sig_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sig_run = sig_title.add_run("Firma del profesional responsable")
+    sig_run.font.name = "Arial"
+    sig_run.font.size = Pt(11)
+    sig_run.bold = True
+
+    if signature_image is not None:
+        try:
+            sig_p = document.add_paragraph()
+            sig_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            sig_p.add_run().add_picture(BytesIO(signature_image.getvalue()), width=Inches(2.15))
+        except Exception:
+            pass
+
+    line_p = document.add_paragraph()
+    line_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    line_run = line_p.add_run("____________________________")
+    line_run.font.name = "Arial"
+    line_run.font.size = Pt(11)
+
+    name_p = document.add_paragraph()
+    name_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    name_run = name_p.add_run("David Gutiérrez Jara")
+    name_run.font.name = "Arial"
+    name_run.font.size = Pt(11)
+    name_run.bold = True
+
+    title_p = document.add_paragraph()
+    title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_run = title_p.add_run("Ingeniero Agrónomo")
+    title_run.font.name = "Arial"
+    title_run.font.size = Pt(11)
 
     output = BytesIO()
     document.save(output)
@@ -1122,6 +1152,7 @@ def make_pdf(
     warnings: list[str],
     location_image=None,
     scheme_image=None,
+    signature_image=None,
 ) -> bytes:
     buffer = BytesIO()
     styles = get_styles()
@@ -1361,11 +1392,35 @@ def make_pdf(
         story.append(Paragraph(f"• {r}", styles["Body"]))
 
     story.append(Spacer(1, 1.0 * cm))
-    firmas = [
-        ["____________________________", "____________________________"],
-        ["Firma consultor", "Firma beneficiario / cliente"],
+    story.append(Paragraph("<b>Firma del profesional responsable</b>", styles["Body"]))
+
+    if signature_image is not None:
+        sig_flow = uploaded_image_flowable(signature_image, width_cm=5.2, height_cm=2.3)
+        if sig_flow:
+            sig_table_img = Table([[sig_flow]], colWidths=[7.5 * cm])
+            sig_table_img.setStyle(TableStyle([
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]))
+            story.append(sig_table_img)
+
+    firma_data = [
+        ["____________________________"],
+        ["David Gutiérrez Jara"],
+        ["Ingeniero Agrónomo"],
     ]
-    story.append(make_table(firmas, col_widths=[8 * cm, 8 * cm], first_col_bold=False))
+    firma_table = make_table(firma_data, col_widths=[7.5 * cm], first_col_bold=False)
+    firma_table.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("FONTNAME", (0, 1), (0, 1), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0, colors.white),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+    ]))
+    story.append(firma_table)
 
     doc.build(story, onFirstPage=later_pages, onLaterPages=later_pages)
     return buffer.getvalue()
@@ -1376,7 +1431,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.4.1 - gráfico Word")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.4.2 - firma profesional")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
@@ -1388,6 +1443,14 @@ with st.sidebar:
     celular = st.text_input("Celular", COMPANY_DEFAULTS["celular"])
     correo = st.text_input("Correo", COMPANY_DEFAULTS["correo"])
     st.caption("Estos datos se insertan automáticamente en portada y pie de página.")
+
+    st.header("Firma")
+    signature_image = st.file_uploader(
+        "Subir firma en PNG",
+        type=["png"],
+        key="signature_image"
+    )
+    st.caption("La firma se insertará al final del Word y PDF, sobre el nombre David Gutiérrez Jara.")
 
 company = {"empresa": empresa, "direccion": direccion, "celular": celular, "correo": correo}
 
@@ -1654,6 +1717,7 @@ with tabs[6]:
         warnings=warnings,
         location_image=location_image,
         scheme_image=scheme_image,
+        signature_image=signature_image,
     )
 
     col_word, col_pdf = st.columns(2)
@@ -1679,6 +1743,7 @@ with tabs[6]:
         warnings=warnings,
         location_image=location_image,
         scheme_image=scheme_image,
+        signature_image=signature_image,
     )
 
     with col_pdf:

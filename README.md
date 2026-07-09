@@ -63,3 +63,12 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Aumenta el tamaño del gráfico de prueba constante solo en la exportación Word.
 - Mantiene el PDF sin cambios.
 - Ajusta levemente los márgenes laterales del Word para evitar recorte del gráfico.
+
+
+## Versión 2.4.2 - firma profesional
+
+- Agrega cargador de firma PNG en la barra lateral.
+- Word y PDF muestran solo una firma al final.
+- Elimina firma del beneficiario/cliente.
+- Inserta la firma del profesional si se sube imagen PNG.
+- Texto final: David Gutiérrez Jara, Ingeniero Agrónomo.
