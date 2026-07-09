@@ -781,6 +781,192 @@ def add_docx_picture_from_upload(document, uploaded_file, width_inches: float = 
         return False
 
 
+
+# =============================================================================
+# TEXTOS NARRATIVOS AUTOMÁTICOS DEL INFORME
+# =============================================================================
+
+def _has_value(value) -> bool:
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except Exception:
+        pass
+    value = str(value).strip()
+    return bool(value) and value.lower() not in ["dato no informado", "no informado", "none", "nan", "0", "0.0"]
+
+
+def _phrase_value(value, suffix: str = "") -> str:
+    if not _has_value(value):
+        return "no informado"
+    return f"{value}{suffix}"
+
+
+def _format_duration_text(calculations: dict) -> str:
+    duration = calculations.get("duration_min")
+    if duration is None:
+        return "una duración no informada"
+    try:
+        duration = float(duration)
+    except Exception:
+        return "una duración no informada"
+
+    if duration >= 1440:
+        return f"{duration:.0f} minutos, equivalentes a 24 horas"
+    if duration >= 60:
+        hours = duration / 60
+        if abs(hours - round(hours)) < 0.01:
+            return f"{duration:.0f} minutos, equivalentes a {hours:.0f} horas"
+        return f"{duration:.0f} minutos, equivalentes a {hours:.1f} horas"
+    return f"{duration:.0f} minutos"
+
+
+def _format_location_text(project: dict, capture: dict) -> str:
+    sector = safe_text(project.get("sector"), "")
+    comuna = safe_text(project.get("comuna"), "")
+    region = safe_text(project.get("region"), "")
+
+    parts = []
+    if sector:
+        parts.append(f"sector {sector}")
+    if comuna:
+        parts.append(f"comuna de {comuna}")
+    if region:
+        parts.append(region)
+
+    if parts:
+        loc = ", ".join(parts)
+    else:
+        loc = "ubicación no informada"
+
+    utm_este = safe_text(capture.get("utm_este"), "")
+    utm_norte = safe_text(capture.get("utm_norte"), "")
+    datum = safe_text(capture.get("datum"), "")
+    huso = safe_text(capture.get("huso"), "")
+
+    if utm_este and utm_norte:
+        loc += f", con coordenadas UTM Este {utm_este} m y Norte {utm_norte} m"
+        if datum or huso:
+            loc += f", Datum/Huso {safe_text(datum, '')} {safe_text(huso, '')}".strip()
+    return loc
+
+
+def _stratigraphy_summary(stratigraphy_df: pd.DataFrame) -> str:
+    if stratigraphy_df is None or stratigraphy_df.empty:
+        return "No se ingresaron antecedentes estratigráficos detallados."
+
+    rows = []
+    for _, row in stratigraphy_df.head(5).iterrows():
+        desde = row.get("Desde_m", "")
+        hasta = row.get("Hasta_m", "")
+        desc = row.get("Descripcion", "")
+        if _has_value(desc):
+            if _has_value(desde) and _has_value(hasta):
+                rows.append(f"entre {desde} y {hasta} m se describe {str(desc).strip()}")
+            else:
+                rows.append(str(desc).strip())
+
+    if not rows:
+        return "No se ingresaron antecedentes estratigráficos detallados."
+
+    return "De acuerdo con la estratigrafía ingresada, " + "; ".join(rows) + "."
+
+
+def build_intro_text(project: dict, capture: dict, methodology: dict, calculations: dict) -> str:
+    cliente = safe_text(project.get("cliente"), "el cliente")
+    identificacion = safe_text(project.get("identificacion"), "la captación subterránea")
+    location = _format_location_text(project, capture)
+
+    return (
+        f"El presente informe detalla los registros de mediciones efectuadas durante la prueba de bombeo "
+        f"realizada en {identificacion}, correspondiente a {cliente}. La captación se ubica en {location}. "
+        f"El documento reúne los antecedentes generales de la captación, la metodología aplicada, los registros "
+        f"de nivel y caudal, la recuperación posterior al bombeo, los gráficos de comportamiento hidráulico y "
+        f"las conclusiones técnicas derivadas de la información ingresada."
+    )
+
+
+def build_methodology_text(project: dict, capture: dict, equipment: dict, methodology: dict, calculations: dict) -> str:
+    bomba = safe_text(equipment.get("bomba"), "equipo de bombeo no informado")
+    potencia = safe_text(equipment.get("potencia"), "potencia no informada")
+    profundidad_bomba = fmt(capture.get("profundidad_bomba"), " m")
+    tuberia = safe_text(capture.get("tuberia_extraccion"), "tubería de extracción no informada")
+    fecha = safe_text(methodology.get("fecha_prueba"), "fecha no informada")
+    hora_inicio = safe_text(methodology.get("hora_inicio"), "hora no informada")
+    hora_termino = safe_text(methodology.get("hora_termino"), "hora no informada")
+    modo = safe_text(methodology.get("modo_prueba"), "modalidad no informada")
+    caudal_obj = safe_text(methodology.get("caudal_objetivo"), "")
+    caudal_prom = fmt(calculations.get("q_mean"), " L/s")
+    duracion = _format_duration_text(calculations)
+    medidor_caudal = safe_text(equipment.get("medidor_caudal") or methodology.get("metodo_caudal"), "instrumento de medición de caudal no informado")
+    instrumento_nivel = safe_text(equipment.get("instrumento_nivel") or methodology.get("metodo_nivel"), "instrumento de medición de nivel no informado")
+    frecuencia = safe_text(methodology.get("frecuencia"), "frecuencia no informada")
+
+    caudal_text = f"a un caudal promedio calculado de {caudal_prom}"
+    if _has_value(caudal_obj):
+        caudal_text = f"considerando un caudal objetivo de {caudal_obj} y {caudal_text}"
+
+    return (
+        f"Para la ejecución de la prueba de bombeo se instaló {bomba}, con potencia {potencia}. "
+        f"El equipo se dispuso a una profundidad de {profundidad_bomba}, utilizando {tuberia}. "
+        f"El día {fecha}, a las {hora_inicio}, se dio inicio a la prueba bajo la modalidad {modo}, "
+        f"{caudal_text}. La medición de caudal se efectuó mediante {medidor_caudal}, mientras que "
+        f"los niveles dinámicos y de recuperación fueron controlados con {instrumento_nivel}. "
+        f"Las mediciones se registraron con una frecuencia {frecuencia}, extendiéndose el bombeo por {duracion}. "
+        f"Finalizado el bombeo a las {hora_termino}, se realizó el seguimiento de recuperación del nivel de agua "
+        f"para evaluar la respuesta posterior de la captación."
+    )
+
+
+def build_capture_characteristics_text(capture: dict, stratigraphy_df: pd.DataFrame) -> str:
+    tipo = safe_text(capture.get("tipo"), "captación subterránea")
+    profundidad = fmt(capture.get("profundidad_total"), " m")
+    diam_perf = safe_text(capture.get("diametro_perforacion"), "")
+    diam_ent = safe_text(capture.get("diametro_entubacion"), "")
+    material = safe_text(capture.get("material_tuberia"), "")
+    nivel_estatico = fmt(capture.get("nivel_estatico"), " m")
+    condicion = safe_text(capture.get("condicion"), "")
+    criba_desde = capture.get("criba_desde")
+    criba_hasta = capture.get("criba_hasta")
+    tuberia_ciega = safe_text(capture.get("tuberia_ciega"), "")
+    observaciones = safe_text(capture.get("observaciones"), "")
+
+    desc = (
+        f"La captación evaluada corresponde a {tipo}, con una profundidad total de {profundidad} "
+        f"y nivel estático inicial de {nivel_estatico}."
+    )
+
+    detalles = []
+    if _has_value(diam_perf):
+        detalles.append(f"diámetro de perforación {diam_perf}")
+    if _has_value(diam_ent):
+        detalles.append(f"diámetro de entubación {diam_ent}")
+    if _has_value(material):
+        detalles.append(f"revestimiento o tubería de {material}")
+    if _has_value(condicion):
+        detalles.append(f"condición {condicion}")
+
+    if detalles:
+        desc += " La habilitación considera " + ", ".join(detalles) + "."
+
+    if _has_value(criba_desde) and _has_value(criba_hasta):
+        desc += f" El tramo ranurado o de cribas informado se extiende desde {criba_desde} m hasta {criba_hasta} m."
+    else:
+        desc += " No se cuenta con antecedentes informados de cribas, ranuras o tramo filtrante, por lo que este dato se declara como no informado."
+
+    if _has_value(tuberia_ciega):
+        desc += f" Se informa además tubería ciega o tramo sin ranurar: {tuberia_ciega}."
+
+    desc += " " + _stratigraphy_summary(stratigraphy_df)
+
+    if _has_value(observaciones):
+        desc += f" Como observación de habilitación se registra: {observaciones}."
+
+    return desc.strip()
+
+
 def make_word_docx(
     company: dict,
     project: dict,
@@ -883,14 +1069,22 @@ def make_word_docx(
     document.add_page_break()
 
     add_docx_heading(document, "1. Introducción")
+    add_docx_paragraph(document, build_intro_text(project, capture, methodology, calculations))
+
+    add_docx_heading(document, "1.1 Antecedentes generales")
     add_docx_paragraph(document,
-        "El presente informe resume los antecedentes de la captación, su habilitación, "
-        "la metodología de prueba de bombeo, los registros de nivel y caudal, la recuperación posterior "
-        "y los resultados calculados a partir de los datos ingresados. La interpretación se limita al periodo "
-        "efectivamente medido y a la calidad de los datos disponibles."
+        "La información presentada a continuación corresponde a los antecedentes declarados para la prueba "
+        "y a los datos técnicos registrados durante el ensayo. Estos antecedentes permiten contextualizar "
+        "la ubicación de la captación, su habilitación y las condiciones bajo las cuales se efectuó la medición."
     )
 
-    add_docx_heading(document, "2. Antecedentes generales")
+    add_docx_heading(document, "1.2 Metodología de la prueba de bombeo")
+    add_docx_paragraph(document, build_methodology_text(project, capture, equipment, methodology, calculations))
+
+    add_docx_heading(document, "1.3 Características generales de la captación")
+    add_docx_paragraph(document, build_capture_characteristics_text(capture, stratigraphy_df))
+
+    add_docx_heading(document, "2. Síntesis de antecedentes generales")
     add_docx_table(document, [
         ["Cliente", project.get("cliente")],
         ["Proyecto", project.get("nombre_proyecto")],
@@ -957,7 +1151,7 @@ def make_word_docx(
         ["Observaciones", equipment.get("observaciones")],
     ])
 
-    add_docx_heading(document, "7. Metodología de prueba de bombeo")
+    add_docx_heading(document, "7. Parámetros metodológicos registrados")
     add_docx_table(document, [
         ["Modo de prueba", methodology.get("modo_prueba")],
         ["Fecha de prueba", methodology.get("fecha_prueba")],
@@ -1208,21 +1402,29 @@ def make_pdf(
     story.append(PageBreak())
 
     # -------------------------------------------------------------------------
-    # 1. INTRODUCCIÓN
+    # 1. INTRODUCCIÓN Y TEXTOS NARRATIVOS
     # -------------------------------------------------------------------------
     story.append(Paragraph("1. Introducción", styles["SectionTitle"]))
-    intro = (
-        "El presente informe resume los antecedentes de la captación, su habilitación, "
-        "la metodología de prueba de bombeo, los registros de nivel y caudal, la recuperación "
-        "posterior y los resultados calculados a partir de los datos ingresados. "
-        "La interpretación se limita al periodo efectivamente medido y a la calidad de los datos disponibles."
-    )
-    story.append(Paragraph(intro, styles["Body"]))
+    story.append(Paragraph(build_intro_text(project, capture, methodology, calculations), styles["Body"]))
+
+    story.append(Paragraph("1.1 Antecedentes generales", styles["SectionTitle"]))
+    story.append(Paragraph(
+        "La información presentada a continuación corresponde a los antecedentes declarados para la prueba "
+        "y a los datos técnicos registrados durante el ensayo. Estos antecedentes permiten contextualizar "
+        "la ubicación de la captación, su habilitación y las condiciones bajo las cuales se efectuó la medición.",
+        styles["Body"]
+    ))
+
+    story.append(Paragraph("1.2 Metodología de la prueba de bombeo", styles["SectionTitle"]))
+    story.append(Paragraph(build_methodology_text(project, capture, equipment, methodology, calculations), styles["Body"]))
+
+    story.append(Paragraph("1.3 Características generales de la captación", styles["SectionTitle"]))
+    story.append(Paragraph(build_capture_characteristics_text(capture, stratigraphy_df), styles["Body"]))
 
     # -------------------------------------------------------------------------
-    # 2. ANTECEDENTES GENERALES
+    # 2. SÍNTESIS DE ANTECEDENTES GENERALES
     # -------------------------------------------------------------------------
-    story.append(Paragraph("2. Antecedentes generales", styles["SectionTitle"]))
+    story.append(Paragraph("2. Síntesis de antecedentes generales", styles["SectionTitle"]))
     general_data = [
         ["Cliente", project.get("cliente")],
         ["Proyecto", project.get("nombre_proyecto")],
@@ -1303,7 +1505,7 @@ def make_pdf(
     ]
     story.append(make_table(eq_data, col_widths=[5.2 * cm, 11.2 * cm]))
 
-    story.append(Paragraph("7. Metodología de prueba de bombeo", styles["SectionTitle"]))
+    story.append(Paragraph("7. Parámetros metodológicos registrados", styles["SectionTitle"]))
     met_data = [
         ["Modo de prueba", methodology.get("modo_prueba")],
         ["Fecha de prueba", methodology.get("fecha_prueba")],
@@ -1436,7 +1638,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.1 - texto justificado")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.2 - metodología narrativa")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)

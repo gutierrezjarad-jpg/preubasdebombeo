@@ -89,3 +89,13 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Mantiene los títulos junto al contenido siguiente en Word.
 - Mantiene los títulos junto al contenido siguiente en PDF mediante keepWithNext.
 - Evita que títulos como Introducción, Resultados, Conclusiones o Recomendaciones queden solos al final de una página.
+
+
+## Versión 2.5.2 - metodología narrativa y antecedentes fluidos
+
+- Automatiza una introducción más narrativa.
+- Agrega sección 1.1 Antecedentes generales.
+- Agrega sección 1.2 Metodología de la prueba de bombeo con texto generado según datos reales de la prueba.
+- Agrega sección 1.3 Características generales de la captación en texto continuo, sin tabla.
+- Mantiene las tablas como síntesis técnica posterior.
+- Renombra la antigua tabla de metodología como Parámetros metodológicos registrados para evitar duplicidad.
