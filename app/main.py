@@ -17,7 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
@@ -416,11 +416,11 @@ def get_styles():
     styles.add(ParagraphStyle(
         name="SectionTitle", parent=styles["Heading2"], fontName="Helvetica-Bold",
         fontSize=13, leading=19.5, textColor=colors.HexColor("#006b2e"),
-        spaceBefore=12, spaceAfter=8
+        spaceBefore=12, spaceAfter=8, keepWithNext=1
     ))
     styles.add(ParagraphStyle(
         name="Body", parent=styles["Normal"], fontName="Helvetica",
-        fontSize=11, leading=16.5, alignment=TA_LEFT
+        fontSize=11, leading=16.5, alignment=TA_JUSTIFY
     ))
     styles.add(ParagraphStyle(
         name="TableBody", parent=styles["Normal"], fontName="Helvetica",
@@ -432,7 +432,7 @@ def get_styles():
     ))
     styles.add(ParagraphStyle(
         name="Small", parent=styles["Normal"], fontName="Helvetica",
-        fontSize=8.5, leading=12.75
+        fontSize=8.5, leading=12.75, alignment=TA_JUSTIFY
     ))
     styles.add(ParagraphStyle(
         name="FigureCaption", parent=styles["Normal"], fontName="Helvetica",
@@ -662,6 +662,7 @@ def make_simple_well_scheme(capture: dict):
 
 def add_docx_heading(document, text_value: str, level: int = 1):
     heading = document.add_heading(text_value, level=level)
+    heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
     for run in heading.runs:
         run.font.name = "Arial"
         run.font.size = Pt(13)
@@ -670,12 +671,15 @@ def add_docx_heading(document, text_value: str, level: int = 1):
     heading.paragraph_format.line_spacing = 1.5
     heading.paragraph_format.space_before = Pt(8)
     heading.paragraph_format.space_after = Pt(6)
+    heading.paragraph_format.keep_with_next = True
+    heading.paragraph_format.keep_together = True
     return heading
 
 
 def add_docx_paragraph(document, text_value: str):
     p = document.add_paragraph()
     p.style = document.styles["Normal"]
+    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     p.paragraph_format.line_spacing = 1.5
     p.paragraph_format.space_after = Pt(6)
     run = p.add_run(safe_text(text_value, ""))
@@ -1432,7 +1436,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5 - guardar y cargar datos")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.1 - texto justificado")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)

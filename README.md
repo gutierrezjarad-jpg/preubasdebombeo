@@ -80,3 +80,12 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Permite cargar una ficha JSON para autocompletar empresa, proyecto, captación, equipos, metodología, estratigrafía, bombeo y recuperación.
 - La ficha sirve para recuperar información después de actualizar la aplicación.
 - Por seguridad, la imagen de firma no se guarda dentro de la ficha JSON; debe subirse nuevamente si se requiere insertar en informes.
+
+
+## Versión 2.5.1 - texto justificado y títulos no huérfanos
+
+- Justifica el texto del cuerpo en Word.
+- Justifica el texto del cuerpo en PDF.
+- Mantiene los títulos junto al contenido siguiente en Word.
+- Mantiene los títulos junto al contenido siguiente en PDF mediante keepWithNext.
+- Evita que títulos como Introducción, Resultados, Conclusiones o Recomendaciones queden solos al final de una página.
