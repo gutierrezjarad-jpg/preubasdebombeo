@@ -127,3 +127,12 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Representa bomba y cribas solo si están informadas.
 - Si no hay cribas o bomba, declara 'No informado' en el esquema.
 - Mejora etiquetas, líneas guía y presentación visual para Word y PDF.
+
+
+## Versión 2.5.6 - firma centrada y más estética
+
+- Centra el bloque de firma en Word y PDF.
+- Separa más la firma del texto final del informe.
+- Centra la imagen PNG de la firma.
+- Mantiene solo la firma de David Gutiérrez Jara, Ingeniero Agrónomo.
+- Elimina apariencia de tabla visible en la firma final.

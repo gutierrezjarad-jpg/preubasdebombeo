@@ -1322,9 +1322,15 @@ def make_word_docx(
     for c in generate_conclusions(capture, calculations, warnings, methodology.get("modo_prueba", "")):
         add_docx_paragraph(document, f"• {c}")
 
-    document.add_paragraph()
+    # Bloque de firma profesional, centrado y separado del texto.
+    spacer_p = document.add_paragraph()
+    spacer_p.paragraph_format.space_before = Pt(28)
+    spacer_p.paragraph_format.space_after = Pt(10)
+
     sig_title = document.add_paragraph()
     sig_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sig_title.paragraph_format.space_before = Pt(18)
+    sig_title.paragraph_format.space_after = Pt(8)
     sig_run = sig_title.add_run("Firma del profesional responsable")
     sig_run.font.name = "Arial"
     sig_run.font.size = Pt(11)
@@ -1334,18 +1340,24 @@ def make_word_docx(
         try:
             sig_p = document.add_paragraph()
             sig_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            sig_p.add_run().add_picture(BytesIO(signature_image.getvalue()), width=Inches(2.15))
+            sig_p.paragraph_format.space_before = Pt(2)
+            sig_p.paragraph_format.space_after = Pt(0)
+            sig_p.add_run().add_picture(BytesIO(signature_image.getvalue()), width=Inches(2.35))
         except Exception:
             pass
 
     line_p = document.add_paragraph()
     line_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    line_p.paragraph_format.space_before = Pt(0)
+    line_p.paragraph_format.space_after = Pt(2)
     line_run = line_p.add_run("____________________________")
     line_run.font.name = "Arial"
     line_run.font.size = Pt(11)
 
     name_p = document.add_paragraph()
     name_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    name_p.paragraph_format.space_before = Pt(0)
+    name_p.paragraph_format.space_after = Pt(0)
     name_run = name_p.add_run("David Gutiérrez Jara")
     name_run.font.name = "Arial"
     name_run.font.size = Pt(11)
@@ -1353,6 +1365,8 @@ def make_word_docx(
 
     title_p = document.add_paragraph()
     title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_p.paragraph_format.space_before = Pt(0)
+    title_p.paragraph_format.space_after = Pt(0)
     title_run = title_p.add_run("Ingeniero Agrónomo")
     title_run.font.name = "Arial"
     title_run.font.size = Pt(11)
@@ -1700,36 +1714,53 @@ def make_pdf(
     for c in conclusions:
         story.append(Paragraph(f"• {c}", styles["Body"]))
 
-    story.append(Spacer(1, 1.0 * cm))
-    story.append(Paragraph("<b>Firma del profesional responsable</b>", styles["Body"]))
+    # Bloque de firma profesional, centrado y separado del texto final.
+    story.append(Spacer(1, 2.0 * cm))
+
+    sig_title_style = ParagraphStyle(
+        name="SignatureTitle",
+        parent=styles["Body"],
+        alignment=TA_CENTER,
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        leading=16.5,
+        spaceAfter=6,
+    )
+    sig_text_style = ParagraphStyle(
+        name="SignatureText",
+        parent=styles["Body"],
+        alignment=TA_CENTER,
+        fontName="Helvetica",
+        fontSize=11,
+        leading=16.5,
+        spaceAfter=0,
+    )
+    sig_name_style = ParagraphStyle(
+        name="SignatureName",
+        parent=sig_text_style,
+        fontName="Helvetica-Bold",
+    )
+
+    story.append(Paragraph("Firma del profesional responsable", sig_title_style))
 
     if signature_image is not None:
-        sig_flow = uploaded_image_flowable(signature_image, width_cm=5.2, height_cm=2.3)
+        sig_flow = uploaded_image_flowable(signature_image, width_cm=5.5, height_cm=2.4)
         if sig_flow:
-            sig_table_img = Table([[sig_flow]], colWidths=[7.5 * cm])
+            sig_table_img = Table([[sig_flow]], colWidths=[8.5 * cm])
+            sig_table_img.hAlign = "CENTER"
             sig_table_img.setStyle(TableStyle([
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                 ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
             ]))
             story.append(sig_table_img)
 
-    firma_data = [
-        ["____________________________"],
-        ["David Gutiérrez Jara"],
-        ["Ingeniero Agrónomo"],
-    ]
-    firma_table = make_table(firma_data, col_widths=[7.5 * cm], first_col_bold=False)
-    firma_table.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("FONTNAME", (0, 1), (0, 1), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), 0, colors.white),
-        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
-    ]))
-    story.append(firma_table)
+    story.append(Paragraph("____________________________", sig_text_style))
+    story.append(Paragraph("David Gutiérrez Jara", sig_name_style))
+    story.append(Paragraph("Ingeniero Agrónomo", sig_text_style))
 
     doc.build(story, onFirstPage=later_pages, onLaterPages=later_pages)
     return buffer.getvalue()
@@ -1740,7 +1771,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.5 - esquema constructivo profesional")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.6 - firma centrada")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
