@@ -567,14 +567,12 @@ def uploaded_image_flowable(uploaded_file, width_cm: float = 15.5, height_cm: fl
         return None
     return rl_image_preserve_aspect(src, width_cm, height_cm)
 
-def make_simple_well_scheme(capture: dict):
+def make_simple_well_scheme(capture: dict, stratigraphy_df: pd.DataFrame | None = None):
     """
-    Esquema constructivo simple generado automáticamente.
-    No inventa cribas ni profundidad de bomba si esos datos no fueron ingresados.
-    Si falta profundidad total, no genera esquema.
+    Genera un esquema constructivo referencial con formato más profesional.
+    No inventa cribas, bomba ni niveles si los datos no fueron ingresados.
+    Integra estratigrafía cuando existe información suficiente.
     """
-    styles = get_styles()
-
     total_depth = capture.get("profundidad_total")
     static_level = capture.get("nivel_estatico")
     pump_depth = capture.get("profundidad_bomba")
@@ -588,73 +586,192 @@ def make_simple_well_scheme(capture: dict):
     except Exception:
         return None
 
-    try:
-        static_level = float(static_level)
-    except Exception:
-        static_level = None
+    def _to_float_or_none(v):
+        try:
+            if v is None:
+                return None
+            if isinstance(v, str):
+                v = v.strip().replace(",", ".")
+                if v == "" or v.lower() in ["no informado", "dato no informado", "none", "nan"]:
+                    return None
+            out = float(v)
+            if pd.isna(out) or out <= 0:
+                return None
+            return out
+        except Exception:
+            return None
 
-    try:
-        pump_depth = float(pump_depth)
-        has_pump = pump_depth > 0
-    except Exception:
-        pump_depth = None
-        has_pump = False
+    static_level = _to_float_or_none(static_level)
+    pump_depth = _to_float_or_none(pump_depth)
+    screen_from = _to_float_or_none(screen_from)
+    screen_to = _to_float_or_none(screen_to)
+    has_screen = screen_from is not None and screen_to is not None and screen_to > screen_from
 
-    try:
-        screen_from = float(screen_from)
-        screen_to = float(screen_to)
-        has_screen = screen_from > 0 and screen_to > screen_from
-    except Exception:
-        screen_from = None
-        screen_to = None
-        has_screen = False
+    tipo = safe_text(capture.get("tipo"), "Captación")
+    diam_ent = safe_text(capture.get("diametro_entubacion"), "")
+    diam_perf = safe_text(capture.get("diametro_perforacion"), "")
+    material = safe_text(capture.get("material_tuberia"), "")
 
-    fig, ax = plt.subplots(figsize=(3.2, 7.0))
-    ax.set_xlim(0, 10)
-    ax.set_ylim(total_depth + 2, -2)
+    fig, ax = plt.subplots(figsize=(6.2, 8.7))
+    ax.set_xlim(0, 14)
+    ax.set_ylim(total_depth + max(2, total_depth * 0.08), -1.7)
     ax.axis("off")
 
-    # Terreno
-    ax.plot([0.5, 9.5], [0, 0], color="saddlebrown", linewidth=2)
-    ax.text(6.2, -0.35, "Nivel de terreno", fontsize=7)
+    # Fondo general
+    ax.add_patch(plt.Rectangle((0, -1.7), 14, total_depth + 4, facecolor="#fbfbf8", edgecolor="none"))
 
-    # Tubería
-    ax.plot([4, 4], [0, total_depth], color="black", linewidth=2)
-    ax.plot([6, 6], [0, total_depth], color="black", linewidth=2)
-    ax.plot([4, 6], [total_depth, total_depth], color="black", linewidth=2)
+    # Escala de profundidad
+    scale_x = 1.0
+    ax.plot([scale_x, scale_x], [0, total_depth], color="#444444", linewidth=1.0)
+    tick_step = 1 if total_depth <= 12 else 2 if total_depth <= 30 else 5
+    ticks = np.arange(0, total_depth + 0.01, tick_step)
+    for t in ticks:
+        ax.plot([scale_x - 0.15, scale_x + 0.15], [t, t], color="#444444", linewidth=0.8)
+        ax.text(scale_x - 0.25, t, f"{t:.0f}", ha="right", va="center", fontsize=7, color="#333333")
+    ax.text(scale_x - 0.55, total_depth / 2, "Profundidad (m)", ha="center", va="center",
+            fontsize=8, rotation=90, color="#333333")
 
-    # Nivel estático
-    if static_level is not None:
-        ax.plot([3.7, 6.3], [static_level, static_level], color="blue", linewidth=1.8)
-        ax.text(6.5, static_level, f"Nivel estático {static_level:.2f} m", fontsize=7, va="center")
+    # Estratigrafía lateral
+    strat_x0, strat_w = 1.55, 1.45
+    has_valid_strat = False
+    if stratigraphy_df is not None and not stratigraphy_df.empty:
+        valid_strat = stratigraphy_df.copy()
+        for col in ["Desde_m", "Hasta_m"]:
+            if col in valid_strat.columns:
+                valid_strat[col] = pd.to_numeric(valid_strat[col], errors="coerce")
+        if {"Desde_m", "Hasta_m"}.issubset(valid_strat.columns):
+            valid_strat = valid_strat.dropna(subset=["Desde_m", "Hasta_m"])
+            valid_strat = valid_strat[valid_strat["Hasta_m"] > valid_strat["Desde_m"]].head(12)
+            has_valid_strat = not valid_strat.empty
+        else:
+            valid_strat = pd.DataFrame()
     else:
-        ax.text(6.5, total_depth * 0.2, "Nivel estático: no informado", fontsize=7, va="center")
+        valid_strat = pd.DataFrame()
+
+    if has_valid_strat:
+        palette = ["#ead9c2", "#d8c8a8", "#c9d6b8", "#c8d8e4", "#d6d6d6", "#e2d2c4"]
+        for i, (_, row) in enumerate(valid_strat.iterrows()):
+            y0 = max(0, float(row["Desde_m"]))
+            y1 = min(total_depth, float(row["Hasta_m"]))
+            if y1 <= y0:
+                continue
+            color = palette[i % len(palette)]
+            ax.add_patch(plt.Rectangle((strat_x0, y0), strat_w, y1 - y0,
+                                       facecolor=color, edgecolor="#777777", linewidth=0.5))
+            desc = safe_text(row.get("Descripcion", ""), "")
+            label = f"{y0:g}-{y1:g} m"
+            if desc:
+                desc_short = desc[:24] + "…" if len(desc) > 24 else desc
+                label += f"\n{desc_short}"
+            ax.text(strat_x0 + strat_w/2, (y0+y1)/2, label, ha="center", va="center",
+                    fontsize=6.3, color="#333333", wrap=True)
+    else:
+        ax.add_patch(plt.Rectangle((strat_x0, 0), strat_w, total_depth,
+                                   facecolor="#f0e7d8", edgecolor="#777777", linewidth=0.5))
+        ax.text(strat_x0 + strat_w/2, total_depth/2, "Estratigrafía\nno informada",
+                ha="center", va="center", fontsize=7, color="#555555")
+    ax.text(strat_x0 + strat_w/2, -0.65, "Estratigrafía", ha="center",
+            va="bottom", fontsize=8, fontweight="bold", color="#006b2e")
+
+    # Terreno y sello superficial
+    ax.plot([0.7, 13.2], [0, 0], color="#5a3d22", linewidth=2.0)
+    ax.add_patch(plt.Rectangle((3.2, -0.25), 4.1, 0.25, facecolor="#c9c9c9", edgecolor="#777777", linewidth=0.6))
+    ax.text(9.2, -0.35, "Nivel de terreno", ha="left", va="center", fontsize=7.5, color="#333333")
+
+    # Perforación y entubación
+    bore_x0, bore_x1 = 4.2, 6.4
+    casing_x0, casing_x1 = 4.72, 5.88
+    center_x = (casing_x0 + casing_x1) / 2
+
+    ax.add_patch(plt.Rectangle((bore_x0, 0), bore_x1-bore_x0, total_depth,
+                               facecolor="#f6efe5", edgecolor="#7a7a7a", linewidth=1.0))
+    ax.text((bore_x0+bore_x1)/2, -0.65, "Perforación", ha="center", va="bottom",
+            fontsize=8, fontweight="bold", color="#006b2e")
+
+    ax.add_patch(plt.Rectangle((casing_x0, 0), casing_x1-casing_x0, total_depth,
+                               facecolor="#fdfdfd", edgecolor="#111111", linewidth=1.2))
+    ax.add_patch(plt.Rectangle((casing_x0+0.12, 0), casing_x1-casing_x0-0.24, total_depth,
+                               facecolor="#ffffff", edgecolor="#666666", linewidth=0.45))
+
+    # Columna de agua y nivel estático
+    water_start = static_level if static_level is not None and static_level < total_depth else total_depth
+    if static_level is not None and water_start < total_depth:
+        ax.add_patch(plt.Rectangle((casing_x0+0.18, water_start), casing_x1-casing_x0-0.36,
+                                   total_depth-water_start, facecolor="#d8eef8",
+                                   edgecolor="none", alpha=0.95))
+        ax.plot([casing_x0 - 0.35, casing_x1 + 0.35], [static_level, static_level],
+                color="#1877b7", linewidth=1.6)
+        ax.text(7.05, static_level, f"Nivel estático: {static_level:.2f} m",
+                ha="left", va="center", fontsize=7.5, color="#1877b7")
+        ax.plot([casing_x1 + 0.05, 6.95], [static_level, static_level],
+                color="#1877b7", linewidth=0.7)
 
     # Cribas / tramo ranurado
     if has_screen:
-        ax.fill_between([4, 6], screen_from, screen_to, color="#d9ead3", alpha=0.75)
-        for y in np.linspace(screen_from, screen_to, 12):
-            ax.plot([4.05, 5.95], [y, y], color="gray", linewidth=0.7)
-        ax.text(6.5, (screen_from + screen_to) / 2, f"Cribas {screen_from:.1f}-{screen_to:.1f} m", fontsize=7, va="center")
+        sf, stt = max(0, screen_from), min(total_depth, screen_to)
+        ax.add_patch(plt.Rectangle((casing_x0+0.12, sf), casing_x1-casing_x0-0.24, stt-sf,
+                                   facecolor="#e8f4e8", edgecolor="#1f7a3a", linewidth=1.0))
+        slot_count = max(5, int((stt - sf) / max(total_depth, 1) * 40))
+        for y in np.linspace(sf + 0.12, stt - 0.12, slot_count):
+            ax.plot([casing_x0+0.25, casing_x1-0.25], [y, y], color="#1f7a3a", linewidth=0.7)
+        ax.text(7.05, (sf+stt)/2, f"Cribas / tramo ranurado:\n{sf:.1f} - {stt:.1f} m",
+                ha="left", va="center", fontsize=7.3, color="#1f7a3a")
+        ax.plot([casing_x1, 6.95], [(sf+stt)/2, (sf+stt)/2], color="#1f7a3a", linewidth=0.7)
     else:
-        ax.text(6.5, total_depth * 0.65, "Cribas/tramo filtrante: no informado", fontsize=7, va="center")
+        ax.text(7.05, total_depth*0.62, "Cribas / tramo filtrante:\nNo informado",
+                ha="left", va="center", fontsize=7.3, color="#6a6a6a")
+        ax.plot([casing_x1, 6.95], [total_depth*0.62, total_depth*0.62],
+                color="#9a9a9a", linewidth=0.7, linestyle="--")
 
-    # Bomba
-    if has_pump:
-        ax.scatter([5], [pump_depth], marker="s", s=42, color="black")
-        ax.text(6.5, pump_depth, f"Bomba {pump_depth:.1f} m", fontsize=7, va="center")
+    # Bomba y columna
+    if pump_depth is not None and pump_depth < total_depth:
+        pump_h = max(total_depth * 0.035, 0.45)
+        ax.add_patch(plt.Rectangle((center_x-0.25, pump_depth-pump_h/2), 0.5, pump_h,
+                                   facecolor="#333333", edgecolor="#111111", linewidth=0.8))
+        ax.add_patch(plt.Rectangle((center_x-0.08, 0), 0.16, max(0, pump_depth-pump_h/2),
+                                   facecolor="#555555", edgecolor="none"))
+        ax.text(7.05, pump_depth, f"Bomba: {pump_depth:.1f} m",
+                ha="left", va="center", fontsize=7.5, color="#333333")
+        ax.plot([center_x+0.25, 6.95], [pump_depth, pump_depth], color="#333333", linewidth=0.7)
     else:
-        ax.text(6.5, total_depth * 0.82, "Profundidad bomba: no informada", fontsize=7, va="center")
+        ax.text(7.05, total_depth*0.82, "Profundidad de bomba:\nNo informada",
+                ha="left", va="center", fontsize=7.3, color="#6a6a6a")
+        ax.plot([casing_x1, 6.95], [total_depth*0.82, total_depth*0.82],
+                color="#9a9a9a", linewidth=0.7, linestyle="--")
 
-    ax.text(6.5, total_depth, f"Profundidad total {total_depth:.1f} m", fontsize=7, va="center")
-    ax.set_title("Esquema constructivo referencial", fontsize=9)
+    # Fondo del pozo
+    ax.plot([casing_x0, casing_x1], [total_depth, total_depth], color="#111111", linewidth=1.2)
+    ax.text(7.05, total_depth, f"Profundidad total: {total_depth:.1f} m",
+            ha="left", va="center", fontsize=7.5, color="#333333")
+    ax.plot([casing_x1, 6.95], [total_depth, total_depth], color="#333333", linewidth=0.7)
 
+    # Caja de datos técnicos
+    info_lines = [f"Tipo: {tipo}"]
+    if diam_perf:
+        info_lines.append(f"Diám. perforación: {diam_perf}")
+    if diam_ent:
+        info_lines.append(f"Diám. entubación: {diam_ent}")
+    if material:
+        info_lines.append(f"Material: {material}")
+    info_text = "\n".join(info_lines)
+
+    box_h = max(1.2, 0.45 + 0.45 * len(info_lines))
+    ax.add_patch(plt.Rectangle((8.65, 0.55), 4.25, box_h,
+                               facecolor="#ffffff", edgecolor="#b0b0b0", linewidth=0.7))
+    ax.text(8.85, 0.88, info_text, ha="left", va="top", fontsize=7.4, color="#333333")
+
+    # Título
+    ax.text(7.0, -1.25, "Esquema constructivo referencial de la captación",
+            ha="center", va="center", fontsize=10.5, fontweight="bold", color="#006b2e")
+    ax.text(7.0, -0.92, "Representación no a escala horizontal; profundidad representada en metros.",
+            ha="center", va="center", fontsize=7.2, color="#555555")
+
+    fig.tight_layout(pad=0.4)
     buf = BytesIO()
-    fig.savefig(buf, format="png", dpi=180, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=220, bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
     return buf
-
 
 # =============================================================================
 # GENERACIÓN WORD
@@ -1131,7 +1248,7 @@ def make_word_docx(
         if ok:
             add_docx_paragraph(document, "Figura 2. Esquema constructivo de la captación.")
     else:
-        scheme_buf = make_simple_well_scheme(capture)
+        scheme_buf = make_simple_well_scheme(capture, stratigraphy_df)
         add_docx_picture_from_buffer(document, scheme_buf, width_inches=3.6)
         add_docx_paragraph(document, "Figura 2. Esquema constructivo referencial de la captación.")
 
@@ -1463,7 +1580,7 @@ def make_pdf(
     story.append(Paragraph("4. Esquema constructivo", styles["SectionTitle"]))
     scheme_flow = uploaded_image_flowable(scheme_image, width_cm=9.0, height_cm=12.0) if scheme_image else None
     if scheme_flow is None:
-        scheme_buf = make_simple_well_scheme(capture)
+        scheme_buf = make_simple_well_scheme(capture, stratigraphy_df)
         if scheme_buf is not None:
             scheme_flow = rl_image_preserve_aspect(scheme_buf, max_width_cm=8.2, max_height_cm=12.0)
             story.append(Paragraph("Esquema referencial generado automáticamente a partir de los datos ingresados. No reemplaza plano constructivo real.", styles["Small"]))
@@ -1623,7 +1740,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.4 - sin recomendaciones")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.5 - esquema constructivo profesional")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)

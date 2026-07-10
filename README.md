@@ -116,3 +116,14 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - En Equipos utilizados elimina la fila Observaciones.
 - En Ubicación y habilitación de la captación elimina la fila Observaciones.
 - Mantiene los textos narrativos, conclusiones y firma profesional.
+
+
+## Versión 2.5.5 - esquema constructivo profesional
+
+- Mejora el esquema constructivo automático.
+- Agrega escala de profundidad.
+- Integra estratigrafía lateral cuando existen tramos ingresados.
+- Diferencia perforación, entubación, columna de agua y nivel estático.
+- Representa bomba y cribas solo si están informadas.
+- Si no hay cribas o bomba, declara 'No informado' en el esquema.
+- Mejora etiquetas, líneas guía y presentación visual para Word y PDF.
