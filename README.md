@@ -107,3 +107,12 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Normaliza profundidad total, nivel estático, cribas y profundidad de bomba antes de crear los widgets.
 - Si criba desde/hasta viene vacía o como 'No informado', la app la transforma en 0.0.
 - Mantiene la metodología narrativa de la versión 2.5.2.
+
+
+## Versión 2.5.4 - sin recomendaciones y tablas más limpias
+
+- Elimina la sección Recomendaciones del Word y PDF.
+- En Parámetros metodológicos registrados elimina la fila Observaciones metodológicas.
+- En Equipos utilizados elimina la fila Observaciones.
+- En Ubicación y habilitación de la captación elimina la fila Observaciones.
+- Mantiene los textos narrativos, conclusiones y firma profesional.

@@ -1118,7 +1118,6 @@ def make_word_docx(
         ["Tubería ciega", capture.get("tuberia_ciega")],
         ["Profundidad de bomba", fmt(capture.get("profundidad_bomba"), " m")],
         ["Tubería extracción/succión", capture.get("tuberia_extraccion")],
-        ["Observaciones", capture.get("observaciones")],
     ])
 
     if location_image is not None:
@@ -1148,7 +1147,6 @@ def make_word_docx(
         ["Medidor de caudal", equipment.get("medidor_caudal")],
         ["Instrumento de nivel", equipment.get("instrumento_nivel")],
         ["Generador", equipment.get("generador")],
-        ["Observaciones", equipment.get("observaciones")],
     ])
 
     add_docx_heading(document, "7. Parámetros metodológicos registrados")
@@ -1162,7 +1160,6 @@ def make_word_docx(
         ["Método de medición de caudal", methodology.get("metodo_caudal")],
         ["Método de medición de niveles", methodology.get("metodo_nivel")],
         ["Frecuencia de medición", methodology.get("frecuencia")],
-        ["Observaciones metodológicas", methodology.get("observaciones")],
     ])
 
     add_docx_heading(document, "8. Resultados calculados")
@@ -1207,10 +1204,6 @@ def make_word_docx(
     add_docx_heading(document, "12. Conclusiones")
     for c in generate_conclusions(capture, calculations, warnings, methodology.get("modo_prueba", "")):
         add_docx_paragraph(document, f"• {c}")
-
-    add_docx_heading(document, "13. Recomendaciones")
-    for r in generate_recommendations(capture, calculations, warnings):
-        add_docx_paragraph(document, f"• {r}")
 
     document.add_paragraph()
     sig_title = document.add_paragraph()
@@ -1457,7 +1450,6 @@ def make_pdf(
         ["Tubería ciega", capture.get("tuberia_ciega")],
         ["Profundidad de bomba", fmt(capture.get("profundidad_bomba"), " m")],
         ["Tubería extracción/succión", capture.get("tuberia_extraccion")],
-        ["Observaciones", capture.get("observaciones")],
     ]
     story.append(make_table(cap_data, col_widths=[5.2 * cm, 11.2 * cm]))
 
@@ -1501,7 +1493,6 @@ def make_pdf(
         ["Medidor de caudal", equipment.get("medidor_caudal")],
         ["Instrumento de nivel", equipment.get("instrumento_nivel")],
         ["Generador", equipment.get("generador")],
-        ["Observaciones", equipment.get("observaciones")],
     ]
     story.append(make_table(eq_data, col_widths=[5.2 * cm, 11.2 * cm]))
 
@@ -1516,7 +1507,6 @@ def make_pdf(
         ["Método de medición de caudal", methodology.get("metodo_caudal")],
         ["Método de medición de niveles", methodology.get("metodo_nivel")],
         ["Frecuencia de medición", methodology.get("frecuencia")],
-        ["Observaciones metodológicas", methodology.get("observaciones")],
     ]
     story.append(make_table(met_data, col_widths=[5.2 * cm, 11.2 * cm]))
 
@@ -1586,17 +1576,12 @@ def make_pdf(
     story.append(df_to_pdf_table(recovery_df, max_rows=70, font_size=5.8))
 
     # -------------------------------------------------------------------------
-    # 12. CONCLUSIONES Y RECOMENDACIONES
+    # 12. CONCLUSIONES
     # -------------------------------------------------------------------------
     story.append(Paragraph("12. Conclusiones", styles["SectionTitle"]))
     conclusions = generate_conclusions(capture, calculations, warnings, methodology.get("modo_prueba", ""))
     for c in conclusions:
         story.append(Paragraph(f"• {c}", styles["Body"]))
-
-    story.append(Paragraph("13. Recomendaciones", styles["SectionTitle"]))
-    recs = generate_recommendations(capture, calculations, warnings)
-    for r in recs:
-        story.append(Paragraph(f"• {r}", styles["Body"]))
 
     story.append(Spacer(1, 1.0 * cm))
     story.append(Paragraph("<b>Firma del profesional responsable</b>", styles["Body"]))
@@ -1638,7 +1623,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.3 - corrección campos numéricos")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.4 - sin recomendaciones")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
