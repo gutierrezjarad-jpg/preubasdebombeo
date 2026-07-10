@@ -441,6 +441,15 @@ def get_styles():
     ))
     return styles
 
+
+def keep_paragraph(text_value: str, style):
+    """
+    Mantiene un párrafo completo junto. Evita títulos con una sola línea de contenido
+    al final de página y el resto en la página siguiente.
+    """
+    return KeepTogether([Paragraph(text_value, style)])
+
+
 def report_header_footer(canvas, doc, company: dict):
     canvas.saveState()
     width, height = A4
@@ -799,10 +808,25 @@ def add_docx_paragraph(document, text_value: str):
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     p.paragraph_format.line_spacing = 1.5
     p.paragraph_format.space_after = Pt(6)
+    # Evita que un párrafo asociado a un título se parta dejando una sola línea en la página.
+    p.paragraph_format.keep_together = True
     run = p.add_run(safe_text(text_value, ""))
     run.font.name = "Arial"
     run.font.size = Pt(11)
     return p
+
+
+
+def set_docx_row_cant_split(row):
+    """
+    Evita, cuando Word lo respeta, que una fila de tabla se corte entre páginas.
+    """
+    try:
+        trPr = row._tr.get_or_add_trPr()
+        cant_split = row._tr._new_cantSplit()
+        trPr.append(cant_split)
+    except Exception:
+        pass
 
 
 def add_docx_table(document, rows: list[list], first_col_bold: bool = True):
@@ -815,6 +839,10 @@ def add_docx_table(document, rows: list[list], first_col_bold: bool = True):
     table.autofit = True
 
     for i, row in enumerate(rows):
+        try:
+            set_docx_row_cant_split(table.rows[i])
+        except Exception:
+            pass
         for j, value in enumerate(row):
             cell = table.cell(i, j)
             cell.text = safe_text(value, "")
@@ -864,7 +892,12 @@ def add_df_docx_table(document, df: pd.DataFrame, max_rows: int = 80):
                 run.font.size = Pt(7)
 
     for _, row in show.iterrows():
-        cells = table.add_row().cells
+        row_obj = table.add_row()
+        try:
+            set_docx_row_cant_split(row_obj)
+        except Exception:
+            pass
+        cells = row_obj.cells
         for j, col in enumerate(show.columns):
             cells[j].text = str(row[col])
             for p in cells[j].paragraphs:
@@ -1327,15 +1360,6 @@ def make_word_docx(
     spacer_p.paragraph_format.space_before = Pt(28)
     spacer_p.paragraph_format.space_after = Pt(10)
 
-    sig_title = document.add_paragraph()
-    sig_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    sig_title.paragraph_format.space_before = Pt(18)
-    sig_title.paragraph_format.space_after = Pt(8)
-    sig_run = sig_title.add_run("Firma del profesional responsable")
-    sig_run.font.name = "Arial"
-    sig_run.font.size = Pt(11)
-    sig_run.bold = True
-
     if signature_image is not None:
         try:
             sig_p = document.add_paragraph()
@@ -1529,7 +1553,7 @@ def make_pdf(
     # 1. INTRODUCCIÓN Y TEXTOS NARRATIVOS
     # -------------------------------------------------------------------------
     story.append(Paragraph("1. Introducción", styles["SectionTitle"]))
-    story.append(Paragraph(build_intro_text(project, capture, methodology, calculations), styles["Body"]))
+    story.append(keep_paragraph(build_intro_text(project, capture, methodology, calculations), styles["Body"]))
 
     story.append(Paragraph("1.1 Antecedentes generales", styles["SectionTitle"]))
     story.append(Paragraph(
@@ -1540,10 +1564,10 @@ def make_pdf(
     ))
 
     story.append(Paragraph("1.2 Metodología de la prueba de bombeo", styles["SectionTitle"]))
-    story.append(Paragraph(build_methodology_text(project, capture, equipment, methodology, calculations), styles["Body"]))
+    story.append(keep_paragraph(build_methodology_text(project, capture, equipment, methodology, calculations), styles["Body"]))
 
     story.append(Paragraph("1.3 Características generales de la captación", styles["SectionTitle"]))
-    story.append(Paragraph(build_capture_characteristics_text(capture, stratigraphy_df), styles["Body"]))
+    story.append(keep_paragraph(build_capture_characteristics_text(capture, stratigraphy_df), styles["Body"]))
 
     # -------------------------------------------------------------------------
     # 2. SÍNTESIS DE ANTECEDENTES GENERALES
@@ -1712,7 +1736,7 @@ def make_pdf(
     story.append(Paragraph("12. Conclusiones", styles["SectionTitle"]))
     conclusions = generate_conclusions(capture, calculations, warnings, methodology.get("modo_prueba", ""))
     for c in conclusions:
-        story.append(Paragraph(f"• {c}", styles["Body"]))
+        story.append(keep_paragraph(f"• {c}", styles["Body"]))
 
     # Bloque de firma profesional, centrado y separado del texto final.
     story.append(Spacer(1, 2.0 * cm))
@@ -1740,8 +1764,6 @@ def make_pdf(
         parent=sig_text_style,
         fontName="Helvetica-Bold",
     )
-
-    story.append(Paragraph("Firma del profesional responsable", sig_title_style))
 
     if signature_image is not None:
         sig_flow = uploaded_image_flowable(signature_image, width_cm=5.5, height_cm=2.4)
@@ -1771,7 +1793,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.6 - firma centrada")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.7 - firma limpia y saltos")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)

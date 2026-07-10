@@ -136,3 +136,12 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Centra la imagen PNG de la firma.
 - Mantiene solo la firma de David Gutiérrez Jara, Ingeniero Agrónomo.
 - Elimina apariencia de tabla visible en la firma final.
+
+
+## Versión 2.5.7 - firma limpia y control de saltos
+
+- Elimina el texto 'Firma del profesional responsable'.
+- Mantiene solo imagen/línea/nombre/profesión en la firma final.
+- Refuerza en Word que los títulos se mantengan con su contenido.
+- Refuerza en Word que los párrafos no se partan dejando una línea huérfana.
+- Refuerza en PDF que los párrafos narrativos se mantengan juntos cuando sea posible.
