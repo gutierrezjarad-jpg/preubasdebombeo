@@ -6,6 +6,7 @@ from datetime import datetime
 from io import BytesIO
 import textwrap
 import json
+import unicodedata
 
 import numpy as np
 import pandas as pd
@@ -1793,7 +1794,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.7 - firma limpia y saltos")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.8 - importación Excel de bombeo y recuperación")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
@@ -1990,6 +1991,268 @@ def build_payload(company, project, capture, equipment, methodology, stratigraph
     }
 
 
+
+# =============================================================================
+# IMPORTAR EXCEL DE TERRENO
+# =============================================================================
+
+def normalize_excel_token(value) -> str:
+    """Normaliza encabezados de Excel: minúsculas, sin tildes, sin símbolos."""
+    value = "" if value is None else str(value)
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = value.lower().strip()
+    value = value.replace("³", "3")
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    return value
+
+
+def excel_series_to_number(series: pd.Series) -> pd.Series:
+    """Convierte números con coma decimal y separadores de miles a float."""
+    def parse_one(value):
+        if value is None:
+            return np.nan
+        try:
+            if pd.isna(value):
+                return np.nan
+        except Exception:
+            pass
+        if isinstance(value, (int, float, np.number)):
+            return float(value)
+        s = str(value).strip()
+        if not s:
+            return np.nan
+        s = s.replace(" ", "")
+        # 1.234,56 -> 1234.56; 1,84 -> 1.84; 1.234 -> 1234 si parece miles.
+        if "," in s and "." in s:
+            s = s.replace(".", "").replace(",", ".")
+        elif "," in s:
+            s = s.replace(",", ".")
+        elif re.fullmatch(r"\d{1,3}(\.\d{3})+", s):
+            s = s.replace(".", "")
+        s = re.sub(r"[^0-9.\-]", "", s)
+        try:
+            return float(s) if s not in ["", ".", "-", "-." ] else np.nan
+        except Exception:
+            return np.nan
+    return series.apply(parse_one)
+
+
+def excel_header_score(row_values) -> int:
+    tokens = [normalize_excel_token(v) for v in row_values if str(v).strip()]
+    joined = " ".join(tokens)
+    has_time = any(t in joined for t in ["tiempo", "min", "minuto"])
+    has_level = any(t in joined for t in ["nivel", "dinamico", "estatico", "profundidad", "n_dinamico"])
+    has_flow = any(t in joined for t in ["caudal", "litros", "lts", "lt_seg", "l_s", "litrosxseg", "m3_h"])
+    has_date_hour = any(t in joined for t in ["fecha", "hora"])
+    has_recovery = any(t in joined for t in ["recuper", "recobro"])
+    score = 0
+    score += 3 if has_time else 0
+    score += 3 if has_level else 0
+    score += 2 if has_flow else 0
+    score += 1 if has_date_hour else 0
+    score += 1 if has_recovery else 0
+    return score
+
+
+def is_probable_header(row_values) -> bool:
+    return excel_header_score(row_values) >= 6
+
+
+def find_column_by_alias(columns, aliases):
+    normalized = {col: normalize_excel_token(col) for col in columns}
+    for col, token in normalized.items():
+        for alias in aliases:
+            if alias in token:
+                return col
+    return None
+
+
+def canonicalize_excel_table(df: pd.DataFrame, table_type: str, sheet_name: str = "") -> pd.DataFrame:
+    """Convierte una tabla detectada a las columnas internas de la app."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    df = df.copy()
+    df = df.dropna(how="all")
+    df.columns = [safe_text(c, "") for c in df.columns]
+
+    fecha_col = find_column_by_alias(df.columns, ["fecha", "date"])
+    hora_col = find_column_by_alias(df.columns, ["hora", "hour"])
+    tiempo_col = find_column_by_alias(df.columns, ["tiempo", "min", "minuto", "t_min"])
+    nivel_col = find_column_by_alias(df.columns, ["nivel", "n_dinamico", "dinamico", "profundidad", "nivel_m", "cota"])
+    caudal_col = find_column_by_alias(df.columns, ["caudal", "litrosxseg", "litros_seg", "litros", "lts", "lt_seg", "l_s", "m3_h", "m3hr", "m3_hora"])
+    obs_col = find_column_by_alias(df.columns, ["observacion", "obs", "comentario", "nota"])
+
+    out = pd.DataFrame()
+    out["Fecha"] = df[fecha_col].astype(str).replace("nan", "") if fecha_col else ""
+    out["Hora"] = df[hora_col].astype(str).replace("nan", "") if hora_col else ""
+    out["Tiempo_min"] = excel_series_to_number(df[tiempo_col]) if tiempo_col else np.nan
+    out["Nivel_m"] = excel_series_to_number(df[nivel_col]) if nivel_col else np.nan
+
+    if table_type == "pumping":
+        if caudal_col:
+            q = excel_series_to_number(df[caudal_col])
+            # Si el encabezado indica m3/h, convertir a L/s.
+            token = normalize_excel_token(caudal_col)
+            if any(k in token for k in ["m3_h", "m3hr", "m3_hora", "m3xhora", "m3xhr"]):
+                q = q * 1000 / 3600
+            out["Caudal_L_s"] = q
+        else:
+            out["Caudal_L_s"] = np.nan
+        out["Observacion"] = df[obs_col].astype(str).replace("nan", "") if obs_col else ""
+        cols = ["Fecha", "Hora", "Tiempo_min", "Nivel_m", "Caudal_L_s", "Observacion"]
+    else:
+        out["Observacion"] = df[obs_col].astype(str).replace("nan", "") if obs_col else ""
+        cols = ["Fecha", "Hora", "Tiempo_min", "Nivel_m", "Observacion"]
+
+    out = out[cols]
+    # Remover filas sin datos técnicos útiles.
+    technical_cols = ["Tiempo_min", "Nivel_m"] + (["Caudal_L_s"] if table_type == "pumping" else [])
+    mask_has_data = out[technical_cols].notna().any(axis=1)
+    mask_has_text = out[["Fecha", "Hora"]].astype(str).apply(lambda s: s.str.strip().ne("")).any(axis=1)
+    out = out[mask_has_data | mask_has_text].copy()
+
+    # Evitar filas de encabezado repetidas dentro del rango.
+    out = out[~out["Tiempo_min"].astype(str).str.lower().str.contains("tiempo|min", na=False)]
+    out = out.reset_index(drop=True)
+    return out
+
+
+def split_raw_excel_sheet_into_tables(raw: pd.DataFrame, sheet_name: str):
+    """Detecta una o más tablas dentro de una hoja de Excel sin asumir encabezado fijo."""
+    tables = []
+    if raw is None or raw.empty:
+        return tables
+
+    header_rows = []
+    for idx in range(min(len(raw), 80)):
+        row_values = list(raw.iloc[idx].values)
+        if is_probable_header(row_values):
+            header_rows.append(idx)
+
+    # Si no encontró encabezado, probar primera fila como encabezado.
+    if not header_rows:
+        header_rows = [0]
+
+    for pos, header_idx in enumerate(header_rows):
+        next_header = header_rows[pos + 1] if pos + 1 < len(header_rows) else len(raw)
+        header = list(raw.iloc[header_idx].values)
+        data = raw.iloc[header_idx + 1:next_header].copy()
+        if data.empty:
+            continue
+        # Cortar después de varias filas completamente vacías.
+        empty_run = 0
+        keep_rows = []
+        for ridx, row in data.iterrows():
+            if row.isna().all():
+                empty_run += 1
+                if empty_run >= 2:
+                    break
+            else:
+                empty_run = 0
+                keep_rows.append(ridx)
+        if keep_rows:
+            data = data.loc[keep_rows]
+
+        # Encabezados limpios y únicos.
+        clean_cols = []
+        counts = {}
+        for c in header:
+            name = safe_text(c, "")
+            if not name:
+                name = f"col_{len(clean_cols)+1}"
+            if name in counts:
+                counts[name] += 1
+                name = f"{name}_{counts[name]}"
+            else:
+                counts[name] = 1
+            clean_cols.append(name)
+        data.columns = clean_cols[:len(data.columns)]
+
+        tokens = " ".join(normalize_excel_token(c) for c in data.columns) + " " + normalize_excel_token(sheet_name)
+        if "recuper" in tokens and not any(k in tokens for k in ["caudal", "litrosxseg", "l_s", "lts"]):
+            table_type = "recovery"
+        elif any(k in tokens for k in ["caudal", "litrosxseg", "l_s", "lts", "m3_h"]):
+            table_type = "pumping"
+        elif "recuper" in normalize_excel_token(sheet_name):
+            table_type = "recovery"
+        else:
+            table_type = "unknown"
+
+        tables.append((table_type, canonicalize_excel_table(data, "pumping" if table_type != "recovery" else "recovery", sheet_name), sheet_name))
+    return tables
+
+
+def import_measurements_from_excel(uploaded_file):
+    """Importa tablas de bombeo y recuperación desde un Excel de terreno."""
+    raw_bytes = uploaded_file.getvalue()
+    # sheet_name=None lee todas las hojas.
+    sheets = pd.read_excel(BytesIO(raw_bytes), sheet_name=None, header=None)
+    pumping_tables = []
+    recovery_tables = []
+    detected = []
+
+    for sheet_name, raw in sheets.items():
+        tables = split_raw_excel_sheet_into_tables(raw, sheet_name)
+        for table_type, table_df, src in tables:
+            if table_df.empty:
+                continue
+            if table_type == "recovery":
+                recovery_tables.append(table_df)
+                detected.append(f"{src}: recuperación ({len(table_df)} filas)")
+            elif table_type == "pumping":
+                pumping_tables.append(table_df)
+                detected.append(f"{src}: bombeo ({len(table_df)} filas)")
+            else:
+                # Si no se pudo clasificar, decidir por presencia de caudal útil.
+                if "Caudal_L_s" in table_df.columns and table_df["Caudal_L_s"].notna().any():
+                    pumping_tables.append(table_df)
+                    detected.append(f"{src}: bombeo probable ({len(table_df)} filas)")
+                else:
+                    recovery_tables.append(canonicalize_excel_table(table_df, "recovery", src))
+                    detected.append(f"{src}: recuperación probable ({len(table_df)} filas)")
+
+    pumping = pd.concat(pumping_tables, ignore_index=True) if pumping_tables else pd.DataFrame()
+    recovery = pd.concat(recovery_tables, ignore_index=True) if recovery_tables else pd.DataFrame()
+
+    # Ordenar por tiempo si existe.
+    if not pumping.empty and "Tiempo_min" in pumping.columns:
+        pumping = pumping.sort_values("Tiempo_min", na_position="last").reset_index(drop=True)
+    if not recovery.empty and "Tiempo_min" in recovery.columns:
+        recovery = recovery.sort_values("Tiempo_min", na_position="last").reset_index(drop=True)
+
+    return pumping, recovery, detected
+
+
+def apply_excel_measurements_to_state(uploaded_file):
+    pumping, recovery, detected = import_measurements_from_excel(uploaded_file)
+    if pumping.empty and recovery.empty:
+        raise ValueError("No se detectaron tablas válidas. Revisa que el Excel tenga columnas como Tiempo, Nivel y Caudal o una hoja llamada Recuperación.")
+
+    if not pumping.empty:
+        st.session_state["pumping_df_loaded"] = pumping
+        # Autorrellenar nivel estático desde tiempo 0 si está vacío.
+        current_static = float(st.session_state.get("capture_nivel_estatico", 0) or 0)
+        if current_static <= 0 and "Tiempo_min" in pumping.columns and "Nivel_m" in pumping.columns:
+            t0 = pumping[pd.to_numeric(pumping["Tiempo_min"], errors="coerce") == 0]
+            if not t0.empty and pd.notna(t0["Nivel_m"].iloc[0]):
+                st.session_state["capture_nivel_estatico"] = float(t0["Nivel_m"].iloc[0])
+        # Autorrellenar caudal objetivo si está vacío.
+        if not safe_text(st.session_state.get("methodology_caudal_objetivo"), "") and "Caudal_L_s" in pumping.columns:
+            qmean = pd.to_numeric(pumping["Caudal_L_s"], errors="coerce").dropna().mean()
+            if pd.notna(qmean):
+                st.session_state["methodology_caudal_objetivo"] = f"{qmean:.2f} L/s".replace(".", ",")
+
+    if not recovery.empty:
+        st.session_state["recovery_df_loaded"] = recovery
+
+    st.session_state["data_version"] = int(st.session_state.get("data_version", 0)) + 1
+    st.session_state["excel_import_summary"] = detected
+    return detected
+
+
 init_state_defaults()
 normalize_numeric_state_fields()
 
@@ -2007,6 +2270,34 @@ with st.sidebar:
                 st.rerun()
             except Exception as exc:
                 st.error(f"No se pudo cargar la ficha: {exc}")
+
+    st.divider()
+    st.header("Importar Excel de terreno")
+    excel_measurements = st.file_uploader(
+        "Subir Excel con bombeo y recuperación (.xlsx/.xls)",
+        type=["xlsx", "xls"],
+        key="excel_measurements_loader",
+    )
+    st.caption("La app buscará columnas como Fecha, Hora, Tiempo, Nivel dinámico/profundidad, Caudal L/s y hojas o tablas de Recuperación.")
+    if st.button("Autorrellenar bombeo y recuperación desde Excel"):
+        if excel_measurements is None:
+            st.warning("Primero sube el archivo Excel de terreno.")
+        else:
+            try:
+                summary = apply_excel_measurements_to_state(excel_measurements)
+                st.success("Excel importado correctamente.")
+                if summary:
+                    st.write("Tablas detectadas:")
+                    for item in summary:
+                        st.write(f"- {item}")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo importar el Excel: {exc}")
+
+    if st.session_state.get("excel_import_summary"):
+        with st.expander("Última importación Excel"):
+            for item in st.session_state.get("excel_import_summary", []):
+                st.write(f"- {item}")
 
     st.divider()
     st.header("Configuración empresa")
@@ -2170,7 +2461,7 @@ with tabs[3]:
 
 with tabs[4]:
     st.subheader("Prueba de gasto constante")
-    st.warning("El sistema no rellena datos faltantes. Solo calcula con datos ingresados/importados.")
+    st.warning("El sistema no rellena datos faltantes. Solo calcula con datos ingresados/importados. Puedes importar el Excel desde la barra lateral.")
     pumping_base = st.session_state.get("pumping_df_loaded")
     if pumping_base is None:
         pumping_base = default_pumping_df(st.session_state.get("methodology_modo_prueba", ""))

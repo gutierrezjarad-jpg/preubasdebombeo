@@ -145,3 +145,12 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Refuerza en Word que los títulos se mantengan con su contenido.
 - Refuerza en Word que los párrafos no se partan dejando una línea huérfana.
 - Refuerza en PDF que los párrafos narrativos se mantengan juntos cuando sea posible.
+
+
+## Versión 2.5.8 - Importación Excel de terreno
+
+- Agrega importador de Excel para autorrellenar la tabla de prueba de bombeo y la tabla de recuperación.
+- Detecta hojas o tablas con columnas tipo Fecha, Hora, Tiempo, Nivel dinámico/profundidad y Caudal L/s.
+- Detecta hojas/tablas de Recuperación por nombre de hoja o encabezados.
+- Convierte coma decimal y, si el caudal viene en m3/h, lo convierte a L/s.
+- Autorrellena nivel estático desde tiempo 0 si estaba vacío y caudal objetivo desde el promedio medido.
