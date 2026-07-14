@@ -154,3 +154,9 @@ El sistema no rellena datos faltantes ni presenta valores estimados como medidos
 - Detecta hojas/tablas de Recuperación por nombre de hoja o encabezados.
 - Convierte coma decimal y, si el caudal viene en m3/h, lo convierte a L/s.
 - Autorrellena nivel estático desde tiempo 0 si estaba vacío y caudal objetivo desde el promedio medido.
+
+
+## Versión 2.5.9 - fix import Excel
+
+- Corrige error: name 're' is not defined.
+- Mantiene importación de Excel para autorrellenar prueba de bombeo y recuperación.

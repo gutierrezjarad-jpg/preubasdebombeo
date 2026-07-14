@@ -6,6 +6,7 @@ from datetime import datetime
 from io import BytesIO
 import textwrap
 import json
+import re
 import unicodedata
 
 import numpy as np
@@ -52,6 +53,8 @@ COMPANY_DEFAULTS = {
     "celular": "+56 9 6796 0884",
     "correo": "irrisalconsulting@gmail.com",
 }
+
+APP_VERSION = "v2.5.9 - fix import Excel"
 
 st.set_page_config(
     page_title="Pruebas de Bombeo - Irrisal Consulting",
@@ -1794,7 +1797,7 @@ def make_pdf(
 # =============================================================================
 
 st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.8 - importación Excel de bombeo y recuperación")
+st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.9 - fix import Excel")
 
 if LOGO_PATH.exists():
     st.image(str(LOGO_PATH), width=260)
