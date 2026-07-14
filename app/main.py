@@ -1,2331 +1,1753 @@
-
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime
-from io import BytesIO
-import textwrap
 import json
+import re
+import tempfile
+from typing import Any
 
-import numpy as np
 import pandas as pd
-import plotly.express as px
 import streamlit as st
-
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import cm
-from reportlab.lib.utils import ImageReader
-from reportlab.platypus import (
-    SimpleDocTemplate, BaseDocTemplate, PageTemplate, Frame,
-    Paragraph, Spacer, Table, TableStyle, Image as RLImage,
-    PageBreak, KeepTogether
-)
+from PIL import Image
+import pytesseract
+import fitz
 
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    PageBreak,
+    Image as RLImage,
+    KeepTogether,
+)
 
 # =============================================================================
-# CONFIGURACIÓN GENERAL
+# CONFIGURACION
 # =============================================================================
 
-APP_DIR = Path(__file__).resolve().parent.parent
-ASSETS_DIR = APP_DIR / "assets"
-EXPORTS_DIR = APP_DIR / "exports"
-ASSETS_DIR.mkdir(exist_ok=True)
-EXPORTS_DIR.mkdir(exist_ok=True)
+st.set_page_config(page_title="Memoria Explicativa DGA - Riego", layout="wide")
 
-LOGO_PATH = ASSETS_DIR / "logo_irrisal.jpg"
+APP_VERSION = "v2.7 - UTM por casillas y secciones 4.2/4.3 calibradas"
 
-COMPANY_DEFAULTS = {
-    "empresa": "Irrisal Consulting Ltda.",
-    "direccion": "San Martín 553, oficina 901, Concepción, Región del Biobío, Chile.",
-    "celular": "+56 9 6796 0884",
-    "correo": "irrisalconsulting@gmail.com",
+PETICIONARIO_EMPRESA = {
+    "tipo_persona": "Persona jurídica",
+    "nombre": "Irrisal Consulting Ltda.",
+    "domicilio": "San Martín 553 oficina 901",
+    "rut": "78.271.963-7",
+    "fono": "+56 9 6796 0884",
+    "correo": "Irrisalconsulting@gmail.com",
 }
 
-st.set_page_config(
-    page_title="Pruebas de Bombeo - Irrisal Consulting",
-    layout="wide"
-)
+DEFAULTS = {
+    "tipo_persona": "Persona jurídica",
+    "sexo": "",
+    "nombre": PETICIONARIO_EMPRESA["nombre"],
+    "rut": PETICIONARIO_EMPRESA["rut"],
+    "domicilio": PETICIONARIO_EMPRESA["domicilio"],
+    "fono": PETICIONARIO_EMPRESA["fono"],
+    "correo": PETICIONARIO_EMPRESA["correo"],
+    "naturaleza": "Subterránea",
+    "tipo_derecho": "Consuntivo",
+    "ejercicio_1": "Permanente",
+    "ejercicio_2": "Continuo",
+    "caudal_l_s": 0.0,
+    "volumen_anual_m3": 0.0,
+    "utm_norte": "",
+    "utm_este": "",
+    "datum_huso": "WGS84 / Huso 18",
+    "descripcion_ubicacion": "",
+    "region": "Región del Biobío",
+    "provincia": "Biobío",
+    "comuna": "",
+    "descripcion_proyecto": "",
+    "porcentaje_riego": 95.0,
+    "porcentaje_subsistencia": 5.0,
+    "personas_beneficiadas": 1,
+    "predio": "",
+    "rol_sii": "",
+    "hectareas_riego": 0.0,
+    "fojas": "",
+    "numero_inscripcion": "",
+    "anio_inscripcion": "",
+    "conservador": "",
+    "informacion_adicional": "Se adjuntan antecedentes técnicos, cartográficos y legales de respaldo al expediente.",
+    "firmante_nombre": "",
+    "firmante_rut": "",
+}
+
+USOS_OPCIONES = ["Riego + Uso doméstico de subsistencia", "Solo riego"]
+
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+TEMPLATE_DGA_PDF = ASSETS_DIR / "MEMORIA-EXPLICATIVA-PARA-DIFERENTES-USOS.pdf"
 
 # =============================================================================
 # UTILIDADES
 # =============================================================================
 
-def clean_numeric_series(series: pd.Series) -> pd.Series:
-    return pd.to_numeric(series, errors="coerce")
 
-
-def safe_text(value, default: str = "Dato no informado") -> str:
+def clean_text(value: Any, default: str = "") -> str:
     if value is None:
         return default
-    if isinstance(value, float) and pd.isna(value):
-        return default
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
     value = str(value).strip()
     return value if value else default
 
 
-def fmt(value, suffix: str = "", decimals: int = 2, empty: str = "No evaluable") -> str:
-    if value is None:
-        return empty
+def to_float(value: Any, default: float = 0.0) -> float:
     try:
-        if pd.isna(value):
-            return empty
+        if value is None:
+            return default
+        if isinstance(value, str):
+            value = value.strip().replace(".", "").replace(",", ".") if re.search(r"\d+\.\d{3}", value) else value.strip().replace(",", ".")
+            if not value:
+                return default
+        out = float(value)
+        if pd.isna(out):
+            return default
+        return out
     except Exception:
-        pass
-    if isinstance(value, (int, float, np.number)):
-        return f"{float(value):.{decimals}f}{suffix}"
-    return f"{value}{suffix}"
+        return default
 
 
-def df_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    out = df.copy()
-    for c in cols:
-        if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
-    return out
+def fmt_num(value: Any, decimals: int = 2) -> str:
+    n = to_float(value, 0.0)
+    if decimals == 0:
+        return f"{n:.0f}"
+    text = f"{n:.{decimals}f}"
+    return text.replace(".", ",")
 
 
-def add_warning(warnings: list[str], condition: bool, message: str):
-    if condition:
-        warnings.append(message)
+def fmt_ca(w: str) -> str:
+    return clean_text(w, "No informado")
 
 
-# =============================================================================
-# CÁLCULOS
-# =============================================================================
-
-def calculate_flow_stats(df: pd.DataFrame) -> dict:
-    if df.empty or "Caudal_L_s" not in df.columns:
-        return {"q_mean": None, "q_min": None, "q_max": None, "q_std": None, "q_var_pct": None, "is_constant": None}
-
-    q = pd.to_numeric(df["Caudal_L_s"], errors="coerce").dropna()
-    if q.empty:
-        return {"q_mean": None, "q_min": None, "q_max": None, "q_std": None, "q_var_pct": None, "is_constant": None}
-
-    q_mean = float(q.mean())
-    q_min = float(q.min())
-    q_max = float(q.max())
-    q_std = float(q.std(ddof=0)) if len(q) > 1 else 0.0
-    q_var_pct = ((q_max - q_min) / q_mean) * 100 if q_mean > 0 else None
-
-    # Criterio simple: diferencia max-min <= 10% del caudal medio.
-    is_constant = q_var_pct is not None and q_var_pct <= 10
-
-    return {
-        "q_mean": q_mean,
-        "q_min": q_min,
-        "q_max": q_max,
-        "q_std": q_std,
-        "q_var_pct": q_var_pct,
-        "is_constant": is_constant,
-    }
+def checkbox(checked: bool) -> str:
+    return "X" if checked else ""
 
 
-def calculate_pumped_volume(df: pd.DataFrame) -> float | None:
-    if df.empty or not {"Tiempo_min", "Caudal_L_s"}.issubset(df.columns):
-        return None
-
-    data = df_numeric(df, ["Tiempo_min", "Caudal_L_s"]).dropna(subset=["Tiempo_min", "Caudal_L_s"])
-    data = data.sort_values("Tiempo_min")
-    if len(data) < 2:
-        return None
-
-    total = 0.0
-    times = data["Tiempo_min"].to_numpy()
-    flows = data["Caudal_L_s"].to_numpy()
-
-    for i in range(1, len(data)):
-        dt = times[i] - times[i - 1]
-        if dt < 0:
-            continue
-        q_avg = (flows[i] + flows[i - 1]) / 2
-        total += q_avg * dt * 60 / 1000
-
-    return float(total)
+def update_volume_from_flow(q_l_s: float) -> float:
+    # L/s -> m3/anio para uso continuo: q * segundos/anio / 1000
+    return q_l_s * 31_536_000 / 1000
 
 
-def evaluate_stabilization(df: pd.DataFrame) -> dict:
-    result = {
-        "evaluable": False,
-        "slope_cm_h": None,
-        "meets": False,
-        "message": "No evaluable: faltan datos suficientes.",
-    }
-
-    if df.empty or not {"Tiempo_min", "Nivel_m"}.issubset(df.columns):
-        return result
-
-    data = df_numeric(df, ["Tiempo_min", "Nivel_m"]).dropna(subset=["Tiempo_min", "Nivel_m"])
-    data = data.sort_values("Tiempo_min")
-    if len(data) < 2:
-        return result
-
-    duration = float(data["Tiempo_min"].max() - data["Tiempo_min"].min())
-    if duration < 180:
-        result["message"] = "No evaluable: se requieren al menos 180 minutos de datos para evaluar tendencia de estabilización."
-        return result
-
-    tmax = data["Tiempo_min"].max()
-    last = data[data["Tiempo_min"] >= tmax - 180].copy()
-    if len(last) < 2:
-        result["message"] = "No evaluable: no hay suficientes puntos en los últimos 180 minutos."
-        return result
-
-    x_h = last["Tiempo_min"].to_numpy() / 60.0
-    y_m = last["Nivel_m"].to_numpy()
-    slope_m_h = np.polyfit(x_h, y_m, 1)[0]
-    slope_cm_h = float(slope_m_h * 100)
-
-    result["evaluable"] = True
-    result["slope_cm_h"] = slope_cm_h
-    result["meets"] = slope_cm_h <= 2
-
-    if result["meets"]:
-        result["message"] = "Presenta estabilización o franca tendencia según criterio ≤ 2 cm/h en los últimos 180 minutos."
-    else:
-        result["message"] = "No presenta estabilización según criterio ≤ 2 cm/h en los últimos 180 minutos."
-
-    return result
+def init_state():
+    for k, v in DEFAULTS.items():
+        st.session_state.setdefault(k, v)
+    st.session_state.setdefault("uso_agua", USOS_OPCIONES[0])
+    st.session_state.setdefault("firma_png", None)
+    st.session_state.setdefault("croquis_png", None)
 
 
-def calculate_recovery(recovery_df: pd.DataFrame, static_level: float, final_dynamic_level: float) -> pd.DataFrame:
-    data = recovery_df.copy()
-    if data.empty or not {"Tiempo_min", "Nivel_m"}.issubset(data.columns):
-        data["Recuperacion_pct"] = np.nan
-        return data
-
-    data = df_numeric(data, ["Tiempo_min", "Nivel_m"])
-    denom = final_dynamic_level - static_level
-    if denom <= 0:
-        data["Recuperacion_pct"] = np.nan
-        return data
-
-    data["Recuperacion_pct"] = ((final_dynamic_level - data["Nivel_m"]) / denom) * 100
-    data["Recuperacion_pct"] = data["Recuperacion_pct"].clip(lower=0, upper=100)
+def get_data() -> dict[str, Any]:
+    data = {k: st.session_state.get(k, v) for k, v in DEFAULTS.items()}
+    data["uso_agua"] = st.session_state.get("uso_agua", USOS_OPCIONES[0])
     return data
 
 
-def time_to_recovery(df: pd.DataFrame, target_pct: float) -> float | None:
-    if df.empty or "Recuperacion_pct" not in df.columns:
-        return None
-    valid = df_numeric(df, ["Tiempo_min", "Recuperacion_pct"]).dropna(subset=["Tiempo_min", "Recuperacion_pct"])
-    reached = valid[valid["Recuperacion_pct"] >= target_pct]
-    if reached.empty:
-        return None
-    return float(reached["Tiempo_min"].iloc[0])
+def normalize_payload_keys(payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Mapea nombres antiguos o detectados a los nombres reales de campos de la app.
+    """
+    if not payload:
+        return {}
 
-
-def build_calculations(pumping_df: pd.DataFrame, recovery_df: pd.DataFrame, static_level: float) -> tuple[dict, pd.DataFrame]:
-    pumping = df_numeric(pumping_df, ["Tiempo_min", "Nivel_m", "Caudal_L_s"])
-    pumping_valid = pumping.dropna(subset=["Tiempo_min", "Nivel_m"]).sort_values("Tiempo_min")
-
-    duration_min = None
-    final_dynamic = None
-    drawdown = None
-
-    if not pumping_valid.empty:
-        duration_min = float(pumping_valid["Tiempo_min"].max() - pumping_valid["Tiempo_min"].min())
-        final_dynamic = float(pumping_valid["Nivel_m"].iloc[-1])
-        drawdown = final_dynamic - static_level if final_dynamic >= static_level else None
-
-    flow_stats = calculate_flow_stats(pumping)
-    specific_capacity = flow_stats["q_mean"] / drawdown if drawdown and drawdown > 0 and flow_stats["q_mean"] is not None else None
-    volume_m3 = calculate_pumped_volume(pumping)
-    stabilization = evaluate_stabilization(pumping)
-
-    recovery_with_pct = calculate_recovery(recovery_df, static_level, final_dynamic) if final_dynamic is not None else recovery_df.copy()
-    if "Recuperacion_pct" not in recovery_with_pct.columns:
-        recovery_with_pct["Recuperacion_pct"] = np.nan
-
-    rec_valid = pd.to_numeric(recovery_with_pct["Recuperacion_pct"], errors="coerce").dropna()
-    recovery_max = float(rec_valid.max()) if not rec_valid.empty else None
-
-    calculations = {
-        **flow_stats,
-        "duration_min": duration_min,
-        "final_dynamic": final_dynamic,
-        "drawdown": drawdown,
-        "specific_capacity": specific_capacity,
-        "volume_m3": volume_m3,
-        "stabilization_evaluable": stabilization["evaluable"],
-        "stabilization_meets": stabilization["meets"],
-        "slope_cm_h": stabilization["slope_cm_h"],
-        "stabilization_message": stabilization["message"],
-        "recovery_max": recovery_max,
-        "t75": time_to_recovery(recovery_with_pct, 75),
-        "t90": time_to_recovery(recovery_with_pct, 90),
-        "t100": time_to_recovery(recovery_with_pct, 100),
+    mapping = {
+        "predio_rol": "rol_sii",
+        "predio_fojas": "fojas",
+        "predio_numero": "numero_inscripcion",
+        "predio_anio": "anio_inscripcion",
+        "predio_conservador": "conservador",
+        "utm_n": "utm_norte",
+        "utm_e": "utm_este",
+        "norte": "utm_norte",
+        "este": "utm_este",
+        "utm_north": "utm_norte",
+        "utm_east": "utm_este",
+        "caudal": "caudal_l_s",
+        "caudal_solicitado": "caudal_l_s",
+        "caudal_lts_seg": "caudal_l_s",
+        "caudal_l/s": "caudal_l_s",
+        "volumen_anual": "volumen_anual_m3",
+        "volumen_m3_anual": "volumen_anual_m3",
+        "volumen": "volumen_anual_m3",
     }
 
-    return calculations, recovery_with_pct
+    out = {}
+    for k, v in payload.items():
+        out[mapping.get(k, k)] = v
+    return out
+
+
+def apply_data(payload: dict[str, Any]):
+    payload = normalize_payload_keys(payload)
+    for k in DEFAULTS:
+        if k in payload and payload[k] is not None:
+            st.session_state[k] = payload[k]
+    if "uso_agua" in payload:
+        st.session_state["uso_agua"] = payload["uso_agua"]
 
 
 # =============================================================================
-# GRÁFICOS
+# AUTOCOMPLETAR DESDE INFORME WORD BLA
 # =============================================================================
 
-def make_line_chart_image(
-    df: pd.DataFrame,
-    x_col: str,
-    y_col: str,
-    title: str,
-    x_label: str,
-    y_label: str,
-    invert_y: bool = False,
-) -> BytesIO | None:
-    if df is None or df.empty or not {x_col, y_col}.issubset(df.columns):
-        return None
 
-    data = df_numeric(df, [x_col, y_col]).dropna(subset=[x_col, y_col]).sort_values(x_col)
-    if len(data) < 2:
-        return None
-
-    fig, ax = plt.subplots(figsize=(8.0, 4.1))
-    ax.plot(data[x_col], data[y_col], marker="o", linewidth=1.5, markersize=3.4)
-    ax.set_title(title, fontsize=11)
-    ax.set_xlabel(x_label, fontsize=9)
-    ax.set_ylabel(y_label, fontsize=9)
-    ax.grid(True, alpha=0.32)
-
-    if invert_y:
-        ax.invert_yaxis()
-
-    fig.tight_layout()
-    buffer = BytesIO()
-    fig.savefig(buffer, format="png", dpi=180)
-    plt.close(fig)
-    buffer.seek(0)
-    return buffer
-
-
-def image_flowable(image_buffer: BytesIO | None, width_cm: float = 16.5, height_cm: float = 8.4):
-    if image_buffer is None:
-        return Paragraph("Gráfico no disponible: datos insuficientes.", get_styles()["Body"])
-    image_buffer.seek(0)
-    img = rl_image_preserve_aspect(image_buffer, max_width_cm=width_cm, max_height_cm=height_cm)
-    if img is None:
-        return Paragraph("Gráfico no disponible: error al procesar imagen.", get_styles()["Body"])
-    return img
-
-
-
-# =============================================================================
-# IMÁGENES CON PROPORCIÓN CONSERVADA
-# =============================================================================
-
-def _image_source_from_uploaded(uploaded_file):
-    if uploaded_file is None:
-        return None
-    try:
-        return BytesIO(uploaded_file.getvalue())
-    except Exception:
-        return None
-
-
-def _scaled_dimensions(img_width_px, img_height_px, max_width_cm: float, max_height_cm: float):
+def docx_to_lines(uploaded_file) -> list[str]:
     """
-    Calcula dimensiones para insertar imagen sin deformarla.
+    Extrae texto desde párrafos y tablas de un .docx, manteniendo líneas separadas.
+    Esto permite distinguir campos estructurados como 'Solicitante : Nombre'
+    de frases narrativas como 'La solicitante es propietaria...'.
     """
-    max_w = max_width_cm * cm
-    max_h = max_height_cm * cm
+    doc = Document(uploaded_file)
+    parts: list[str] = []
 
-    if img_width_px <= 0 or img_height_px <= 0:
-        return max_w, max_h
+    for p in doc.paragraphs:
+        txt = re.sub(r"\s+", " ", p.text or "").strip()
+        if txt:
+            parts.append(txt)
 
-    scale = min(max_w / img_width_px, max_h / img_height_px)
-    return img_width_px * scale, img_height_px * scale
+    for table in doc.tables:
+        for row in table.rows:
+            cells = []
+            for cell in row.cells:
+                txt = re.sub(r"\s+", " ", cell.text or "").strip()
+                if txt:
+                    cells.append(txt)
+            if cells:
+                parts.append(" | ".join(cells))
+
+    return parts
 
 
-def rl_image_preserve_aspect(source, max_width_cm: float, max_height_cm: float):
+def docx_to_text(uploaded_file) -> str:
+    return "\n".join(docx_to_lines(uploaded_file))
+
+
+def _norm_label(value: str) -> str:
+    value = (value or "").strip().lower()
+    value = value.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+    value = value.replace(":", "").strip()
+    return value
+
+
+KNOWN_BLA_LABELS = [
+    "Solicitante", "RUT", "Domicilio", "Comuna", "Provincia", "Correo electrónico",
+    "Teléfono", "Telefono", "Naturaleza del agua", "Tipo de derecho", "Ejercicio del derecho",
+    "Modo de extracción", "Tipo de obra", "Uso del agua", "Caudal solicitado",
+    "Coordenadas, huso", "Datum", "Cuenca", "Acuífero", "Acuifero", "Sector acuífero",
+    "Sector acuifero"
+]
+
+
+def _is_known_label(token: str) -> bool:
+    n = _norm_label(token)
+    return any(n == _norm_label(label) for label in KNOWN_BLA_LABELS)
+
+
+def clean_detected_value(value: str) -> str:
+    value = re.sub(r"\s+", " ", value or "").strip(" :|")
+    if value.lower() in ["no registra", "no informado", "sin información", "sin informacion"]:
+        return ""
+    return value
+
+
+def get_structured_field(lines: list[str], label: str) -> str:
     """
-    Crea un Image flowable de ReportLab preservando proporción.
-    Acepta Path, str, BytesIO o UploadedFile convertido a BytesIO.
+    Lee campos de tablas o líneas tipo:
+    Solicitante | : | María Contreras Acuña
+    Uso del agua | : Riego | Caudal solicitado | : 0,95 l/s
+    Evita capturar frases narrativas como 'La solicitante es propietaria...'.
     """
-    if source is None:
-        return None
+    label_norm = _norm_label(label)
 
-    try:
-        if isinstance(source, Path):
-            source_for_reader = str(source)
-            source_for_image = str(source)
-        elif isinstance(source, str):
-            source_for_reader = source
-            source_for_image = source
-        elif isinstance(source, BytesIO):
-            data = source.getvalue()
-            source_for_reader = BytesIO(data)
-            source_for_image = BytesIO(data)
-        else:
-            return None
+    for line in lines:
+        # 1) Tabla con separadores |.
+        tokens = [t.strip() for t in line.split("|") if t.strip()]
+        token_norms = [_norm_label(t) for t in tokens]
 
-        reader = ImageReader(source_for_reader)
-        img_w, img_h = reader.getSize()
-        width, height = _scaled_dimensions(img_w, img_h, max_width_cm, max_height_cm)
-        return RLImage(source_for_image, width=width, height=height)
-    except Exception:
-        return None
+        if label_norm in token_norms:
+            idx = token_norms.index(label_norm)
+            collected = []
+            for t in tokens[idx + 1:]:
+                nt = _norm_label(t)
+                if nt in [":", ""] or t.strip() == ":":
+                    continue
+                if _is_known_label(t):
+                    break
+                value = clean_detected_value(t)
+                if value and value not in collected:
+                    collected.append(value)
+            if collected:
+                return collected[0]
+
+        # 2) En algunos docx la celda trae 'Etiqueta : valor' completa.
+        # Cortar si luego aparece otra etiqueta conocida.
+        m = re.search(rf"(?:^|\|)\s*{re.escape(label)}\s*:??\s*([^\n|]+)", line, flags=re.I)
+        if m:
+            value = clean_detected_value(m.group(1))
+            if value:
+                value = re.split(r"\s+(RUT|Domicilio|Comuna|Provincia|Correo electrónico|Tel[eé]fono|Caudal solicitado|Datum|Huso|Coordenadas)\s*:??", value, flags=re.I)[0]
+                return clean_detected_value(value)
+
+    return ""
+
+def first_match(pattern: str, text: str, flags=re.I) -> str:
+    m = re.search(pattern, text, flags)
+    return m.group(1).strip() if m else ""
 
 
-def draw_header_logo(canvas, x, y, max_w, max_h):
+def parse_coordinates(text_value: str) -> tuple[str, str]:
     """
-    Dibuja el logo en canvas sin deformarlo.
+    Busca coordenadas UTM en formatos frecuentes de informes BLA.
+    Devuelve (utm_norte, utm_este).
+
+    Versión robusta: acepta puntos de miles, espacios, E/N, Este/Norte,
+    coordenadas en tablas y coordenadas en párrafos narrativos.
     """
-    if not LOGO_PATH.exists():
-        return False
-    try:
-        canvas.drawImage(
-            str(LOGO_PATH),
-            x,
-            y,
-            width=max_w,
-            height=max_h,
-            preserveAspectRatio=True,
-            anchor="w",
-            mask="auto",
-        )
-        return True
-    except Exception:
-        return False
+    text_value = text_value or ""
+    flat = re.sub(r"\s+", " ", text_value)
+    flat = flat.replace(";", ",")
+    flat = flat.replace("UTM E", "UTM Este").replace("UTM N", "UTM Norte")
+    flat = flat.replace("m.E", "m E").replace("m.N", "m N").replace("m.S", "m S")
 
+    def clean_coord(value: str) -> str:
+        return re.sub(r"[^0-9]", "", value or "")
 
-# =============================================================================
-# PDF: ESTILOS Y COMPONENTES
-# =============================================================================
+    def valid_pair(norte: str, este: str) -> bool:
+        return len(este) == 6 and len(norte) == 7
 
-def get_styles():
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(
-        name="CoverTitle", parent=styles["Title"], fontName="Helvetica-Bold",
-        fontSize=18, leading=22, alignment=TA_CENTER,
-        textColor=colors.HexColor("#006b2e"), spaceAfter=14
-    ))
-    styles.add(ParagraphStyle(
-        name="CoverSubtitle", parent=styles["Normal"], fontName="Helvetica",
-        fontSize=11, leading=16.5, alignment=TA_CENTER, spaceAfter=6
-    ))
-    styles.add(ParagraphStyle(
-        name="SectionTitle", parent=styles["Heading2"], fontName="Helvetica-Bold",
-        fontSize=13, leading=19.5, textColor=colors.HexColor("#006b2e"),
-        spaceBefore=12, spaceAfter=8, keepWithNext=1
-    ))
-    styles.add(ParagraphStyle(
-        name="Body", parent=styles["Normal"], fontName="Helvetica",
-        fontSize=11, leading=16.5, alignment=TA_JUSTIFY
-    ))
-    styles.add(ParagraphStyle(
-        name="TableBody", parent=styles["Normal"], fontName="Helvetica",
-        fontSize=8.2, leading=10.5, alignment=TA_LEFT
-    ))
-    styles.add(ParagraphStyle(
-        name="TableSmall", parent=styles["Normal"], fontName="Helvetica",
-        fontSize=7.0, leading=8.6, alignment=TA_LEFT
-    ))
-    styles.add(ParagraphStyle(
-        name="Small", parent=styles["Normal"], fontName="Helvetica",
-        fontSize=8.5, leading=12.75, alignment=TA_JUSTIFY
-    ))
-    styles.add(ParagraphStyle(
-        name="FigureCaption", parent=styles["Normal"], fontName="Helvetica",
-        fontSize=8.5, leading=12.75, alignment=TA_CENTER,
-        textColor=colors.HexColor("#555555"), spaceAfter=7
-    ))
-    return styles
-
-
-def keep_paragraph(text_value: str, style):
-    """
-    Mantiene un párrafo completo junto. Evita títulos con una sola línea de contenido
-    al final de página y el resto en la página siguiente.
-    """
-    return KeepTogether([Paragraph(text_value, style)])
-
-
-def report_header_footer(canvas, doc, company: dict):
-    canvas.saveState()
-    width, height = A4
-
-    green = colors.HexColor("#006b2e")
-    gray = colors.HexColor("#444444")
-
-    # Header: logo pequeño + nombre empresa
-    logo_drawn = draw_header_logo(
-        canvas,
-        x=1.45 * cm,
-        y=height - 1.05 * cm,
-        max_w=1.25 * cm,
-        max_h=0.72 * cm,
-    )
-
-    text_x = 2.85 * cm if logo_drawn else 1.5 * cm
-
-    canvas.setFont("Helvetica-Bold", 7.4)
-    canvas.setFillColor(green)
-    canvas.drawString(text_x, height - 0.72 * cm, safe_text(company.get("empresa"), ""))
-
-    canvas.setStrokeColor(green)
-    canvas.setLineWidth(0.65)
-    canvas.line(1.4 * cm, height - 1.22 * cm, width - 1.4 * cm, height - 1.22 * cm)
-
-    # Footer: contacto + número de página
-    canvas.setStrokeColor(colors.HexColor("#bbbbbb"))
-    canvas.setLineWidth(0.35)
-    canvas.line(1.4 * cm, 1.02 * cm, width - 1.4 * cm, 1.02 * cm)
-
-    canvas.setFont("Helvetica", 6.5)
-    canvas.setFillColor(gray)
-    footer = f"{safe_text(company.get('direccion'), '')} | {safe_text(company.get('celular'), '')} | {safe_text(company.get('correo'), '')}"
-    canvas.drawString(1.5 * cm, 0.68 * cm, footer[:130])
-    canvas.drawRightString(width - 1.5 * cm, 0.68 * cm, f"Página {doc.page}")
-
-    canvas.restoreState()
-
-def make_table(data, col_widths=None, header=False, font_size=8.2, first_col_bold=True):
-    wrapped = []
-    styles = get_styles()
-    table_style = styles["TableBody"]
-
-    for row in data:
-        wrapped.append([Paragraph(safe_text(cell, ""), table_style) for cell in row])
-
-    table = Table(wrapped, colWidths=col_widths, repeatRows=1 if header else 0)
-    style = [
-        ("GRID", (0, 0), (-1, -1), 0.28, colors.HexColor("#999999")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 0), (-1, -1), font_size),
-        ("LEADING", (0, 0), (-1, -1), font_size * 1.25),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    patterns = [
+        # Huso 18, coordenadas 753.811 m E, 5.821.082 m S/N
+        (r"coordenadas?.{0,80}?([0-9]{3}[\.\s]?[0-9]{3})\s*m?\s*(?:E|Este)\s*,?\s*(?:y\s*)?([0-9]{1}[\.\s]?[0-9]{3}[\.\s]?[0-9]{3})\s*m?\s*(?:S|N|Norte)?", "E_N"),
+        # coordenadas UTM Datum WGS84, Huso 18, correspondientes a Este 753.811 m y Norte 5.821.082 m
+        (r"(?:Este|UTM Este|\bE\b)\s*[:\-]?\s*([0-9]{3}[\.\s]?[0-9]{3})\s*m?.{0,80}?(?:Norte|UTM Norte|\bN\b|\bS\b)\s*[:\-]?\s*([0-9]{1}[\.\s]?[0-9]{3}[\.\s]?[0-9]{3})", "E_N"),
+        # Norte primero
+        (r"(?:Norte|UTM Norte|\bN\b|\bS\b)\s*[:\-]?\s*([0-9]{1}[\.\s]?[0-9]{3}[\.\s]?[0-9]{3})\s*m?.{0,80}?(?:Este|UTM Este|\bE\b)\s*[:\-]?\s*([0-9]{3}[\.\s]?[0-9]{3})", "N_E"),
+        # Coordenadas: 753811 5821082
+        (r"coordenadas?.{0,90}?([0-9]{6})\D+([0-9]{7})", "E_N"),
     ]
-    if first_col_bold:
-        style += [
-            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#edf7ef")),
-        ]
-    if header:
-        style += [
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d9ead3")),
-        ]
-    table.setStyle(TableStyle(style))
-    return table
 
-def df_to_pdf_table(df: pd.DataFrame, max_rows: int = 55, font_size: float = 7.0):
-    styles = get_styles()
-    if df is None or df.empty:
-        return Paragraph("Sin datos ingresados.", styles["Body"])
+    for pat, order in patterns:
+        m = re.search(pat, flat, flags=re.I)
+        if not m:
+            continue
+        a = clean_coord(m.group(1))
+        b = clean_coord(m.group(2))
+        if order == "N_E":
+            norte, este = a, b
+        else:
+            este, norte = a, b
+        if valid_pair(norte, este):
+            return norte, este
 
-    show = df.copy().head(max_rows).fillna("")
+    # Último recurso: buscar candidatos numéricos cerca de palabras clave.
+    # Este: 6 dígitos típicos; Norte: 7 dígitos típicos.
+    candidate_text = flat
+    nums = re.findall(r"\b[0-9]{1,2}(?:\.[0-9]{3}){1,2}\b|\b[0-9]{6,7}\b", candidate_text)
+    cleaned = [clean_coord(n) for n in nums]
+    estes = [n for n in cleaned if len(n) == 6]
+    nortes = [n for n in cleaned if len(n) == 7]
+    if estes and nortes:
+        return nortes[0], estes[0]
 
-    # Formato específico: recuperación con dos decimales.
-    if "Recuperacion_pct" in show.columns:
-        show["Recuperacion_pct"] = pd.to_numeric(show["Recuperacion_pct"], errors="coerce").map(
-            lambda x: "" if pd.isna(x) else f"{x:.2f}"
+    return "", ""
+
+
+def parse_direct_bla_text(raw_text: str) -> dict[str, Any]:
+    """
+    Extrae datos críticos directamente desde texto plano de informe BLA.
+    Sirve como refuerzo cuando el Word viene con tablas complejas o cuando el
+    usuario sube PDF/JPG/PNG del informe.
+    """
+    raw_text = raw_text or ""
+    compact = re.sub(r"[ \t]+", " ", raw_text)
+    compact_one = re.sub(r"\s+", " ", raw_text)
+    data: dict[str, Any] = {}
+
+    north, east = parse_coordinates(compact_one)
+    if north and east:
+        data["utm_norte"] = north
+        data["utm_este"] = east
+
+    huso = first_match(r"Huso\s*([0-9]+)", compact_one)
+    datum = first_match(r"Datum\s*:?\s*([A-Za-z0-9]+)", compact_one)
+    if huso or datum:
+        data["datum_huso"] = f"{datum or 'WGS84'} / Huso {huso or '18'}"
+
+    # Caudal solicitado: prioriza frases que incluyan 'solicitado'.
+    caudal = first_match(r"caudal\s+solicitado(?:\s+de|\s*:)?\s*([0-9]+(?:[\.,][0-9]+)?)\s*l/?s", compact_one)
+    if not caudal:
+        caudal = first_match(r"por\s+un\s+caudal(?:\s+de|\s*:)?\s*([0-9]+(?:[\.,][0-9]+)?)\s*l/?s", compact_one)
+    if caudal:
+        q = to_float(caudal)
+        if q > 0:
+            data["caudal_l_s"] = q
+            data["volumen_anual_m3"] = round(update_volume_from_flow(q), 1)
+
+    # Superficie bajo riego.
+    sup = first_match(r"(?:incorporar|riego\s+de|bajo\s+riego\s+de)\s*([0-9]+(?:[\.,][0-9]+)?)\s*ha", compact_one)
+    if sup:
+        data["hectareas_riego"] = to_float(sup)
+
+    comuna = first_match(r"comuna\s+de\s+([A-Za-zÁÉÍÓÚÑáéíóúñüÜ\s]+?)(?:,|\.|\s+con\s+|\s+por\s+|$)", compact_one)
+    if comuna:
+        data["comuna"] = clean_detected_value(comuna).strip(" .,:;")
+
+    if data.get("utm_este") and data.get("utm_norte"):
+        data["descripcion_ubicacion"] = (
+            f"La captación se ubica en la comuna de {data.get('comuna', '')}, "
+            f"individualizada mediante coordenadas UTM Este {data.get('utm_este')} m y Norte {data.get('utm_norte')} m, "
+            f"{data.get('datum_huso', 'WGS84 / Huso 18')}."
         )
 
-    # Formato numérico para evitar decimales excesivos.
-    for col in show.columns:
-        if col != "Recuperacion_pct":
-            numeric = pd.to_numeric(show[col], errors="coerce")
-            if numeric.notna().sum() > 0 and numeric.notna().sum() >= len(show) * 0.5:
-                show[col] = numeric.map(lambda x: "" if pd.isna(x) else f"{x:.3f}".rstrip("0").rstrip("."))
+    return {k: v for k, v in data.items() if v not in [None, ""]}
 
-    data = [list(show.columns)] + show.astype(str).values.tolist()
 
-    ncols = max(1, len(data[0]))
-    col_width = min(16.5 / ncols, 4.5) * cm
-
-    wrapped_data = []
-    for row in data:
-        wrapped_data.append([Paragraph(safe_text(cell, ""), styles["TableSmall"]) for cell in row])
-
-    table = Table(wrapped_data, colWidths=[col_width] * ncols, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#999999")),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d9ead3")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 0), (-1, -1), font_size),
-        ("LEADING", (0, 0), (-1, -1), font_size * 1.25),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-    ]))
-    return table
-
-def uploaded_image_flowable(uploaded_file, width_cm: float = 15.5, height_cm: float = 8.5):
+def extract_memoria_explicativa_summary(lines: list[str]) -> str:
     """
-    Inserta imágenes subidas por el usuario sin deformarlas.
+    Extrae un resumen directo desde la sección 'Memoria explicativa' del informe BLA.
+    Usa los primeros párrafos técnicos y evita tablas/encabezados.
     """
-    src = _image_source_from_uploaded(uploaded_file)
-    if src is None:
-        return None
-    return rl_image_preserve_aspect(src, width_cm, height_cm)
+    collecting = False
+    selected = []
+    stop_words = [
+        "Justificación matemática", "Antecedentes Legales", "Análisis de interferencia",
+        "Recomendación del consultor", "4.1", "4.2", "5.1"
+    ]
+    for line in lines:
+        clean = re.sub(r"\s+", " ", line).strip()
+        if not clean:
+            continue
+        if re.search(r"^Memoria explicativa$", clean, flags=re.I):
+            collecting = True
+            continue
+        if collecting and any(sw.lower() in clean.lower() for sw in stop_words):
+            break
+        if collecting:
+            # evitar tablas cortas o títulos
+            if len(clean) > 80 and not re.search(r"^\d+[\.-]", clean):
+                selected.append(clean)
+        if len(selected) >= 3:
+            break
 
-def make_simple_well_scheme(capture: dict, stratigraphy_df: pd.DataFrame | None = None):
-    """
-    Genera un esquema constructivo referencial con formato más profesional.
-    No inventa cribas, bomba ni niveles si los datos no fueron ingresados.
-    Integra estratigrafía cuando existe información suficiente.
-    """
-    total_depth = capture.get("profundidad_total")
-    static_level = capture.get("nivel_estatico")
-    pump_depth = capture.get("profundidad_bomba")
-    screen_from = capture.get("criba_desde")
-    screen_to = capture.get("criba_hasta")
+    if selected:
+        text_joined = " ".join(selected)
+        # Limitar para que quepa en el formulario.
+        if len(text_joined) > 820:
+            text_joined = text_joined[:817].rsplit(" ", 1)[0] + "..."
+        return text_joined
+    return ""
 
+def parse_informe_bla(uploaded_file) -> dict[str, Any]:
+    lines = docx_to_lines(uploaded_file)
+    text = "\n".join(lines)
+    compact = re.sub(r"[ \t]+", " ", text)
+
+    data: dict[str, Any] = {}
+    # Refuerzo: extraer coordenadas/caudal/superficie desde todo el texto antes de las tablas.
+    data.update(parse_direct_bla_text(text))
+    memoria_summary = extract_memoria_explicativa_summary(lines)
+    if memoria_summary:
+        data["descripcion_proyecto"] = memoria_summary
+
+    # Campos estructurados obligatorios: solo desde tablas/líneas con etiqueta exacta.
+    data["beneficiario_nombre"] = get_structured_field(lines, "Solicitante")
+    data["beneficiario_rut"] = get_structured_field(lines, "RUT")
+    data["beneficiario_domicilio"] = get_structured_field(lines, "Domicilio")
+    data["beneficiario_fono"] = get_structured_field(lines, "Teléfono") or get_structured_field(lines, "Telefono")
+    data["beneficiario_correo"] = get_structured_field(lines, "Correo electrónico")
+
+    comuna = get_structured_field(lines, "Comuna")
+    provincia = get_structured_field(lines, "Provincia")
+    if comuna:
+        data["comuna"] = comuna
+    if provincia:
+        data["provincia"] = provincia
+
+    # Derecho solicitado
+    caudal_txt = get_structured_field(lines, "Caudal solicitado")
+    if not caudal_txt:
+        caudal_txt = first_match(r"caudal solicitado(?:\s+de|\s*:)?\s*([0-9\.,]+)\s*l/?s", compact)
+    if not caudal_txt:
+        caudal_txt = first_match(r"por un caudal(?:\s+solicitado)?(?:\s+de|\s*:)?\s*([0-9\.,]+)\s*l/?s", compact)
+    caudal_num = first_match(r"([0-9]+(?:[\.,][0-9]+)?)", caudal_txt)
+    if caudal_num:
+        data["caudal_l_s"] = to_float(caudal_num)
+        data["volumen_anual_m3"] = round(update_volume_from_flow(to_float(caudal_num)), 1)
+    else:
+        # Último intento: buscar cualquier expresión de caudal en el informe.
+        m_caudal = re.search(r"caudal(?:\s+solicitado)?(?:\s+de|\s*:)?\s*([0-9]+(?:[\.,][0-9]+)?)\s*l/?s", compact, flags=re.I)
+        if m_caudal:
+            data["caudal_l_s"] = to_float(m_caudal.group(1))
+            data["volumen_anual_m3"] = round(update_volume_from_flow(data["caudal_l_s"]), 1)
+
+    coord_line = get_structured_field(lines, "Coordenadas, huso")
+    north, east = parse_coordinates(coord_line or compact)
+    if not (north and east):
+        # Segundo intento: buscar en todo el informe, porque a veces las coordenadas están en texto narrativo.
+        north, east = parse_coordinates(compact)
+
+    if north and east:
+        data["utm_norte"] = north
+        data["utm_este"] = east
+        data["descripcion_ubicacion"] = (
+            f"La captación se ubica en la comuna de {data.get('comuna', '')}, individualizada mediante coordenadas UTM Este {east} m y Norte {north} m, {data.get('datum_huso', 'WGS84 / Huso 18')}."
+        )
+
+    huso = first_match(r"Huso\s*([0-9]+)", coord_line or compact)
+    datum = get_structured_field(lines, "Datum") or first_match(r"Datum\s*:?\s*([A-Za-z0-9]+)", compact)
+    if huso or datum:
+        data["datum_huso"] = f"{datum or 'WGS84'} / Huso {huso or '18'}"
+
+    uso = get_structured_field(lines, "Uso del agua")
+    if uso and not data.get("descripcion_proyecto"):
+        data["descripcion_proyecto"] = (
+            f"El proyecto considera la regularización de un derecho de aprovechamiento de aguas subterráneas "
+            f"destinado principalmente a {uso.lower()}, asociado al predio del solicitante."
+        )
+
+    # Superficie y hectáreas a regar, desde la memoria explicativa.
+    sup_match = re.search(
+        r"superficie total de\s*([0-9\.,]+)\s*ha.*?incorporar\s*([0-9\.,]+)\s*ha",
+        compact,
+        re.I | re.S
+    )
+    if sup_match:
+        data["hectareas_riego"] = to_float(sup_match.group(2))
+    else:
+        ha_match = re.search(r"superficie nueva bajo riego de\s*([0-9\.,]+)\s*ha", compact, re.I)
+        if ha_match:
+            data["hectareas_riego"] = to_float(ha_match.group(1))
+
+    # Predio: usar domicilio si no hay nombre de predio específico.
+    if data.get("beneficiario_domicilio"):
+        data["predio"] = data["beneficiario_domicilio"]
+
+    # Descripción de ubicación.
+    if data.get("utm_este") and data.get("utm_norte"):
+        data["descripcion_ubicacion"] = (
+            f"El punto de captación se ubica en la comuna de {data.get('comuna', '')}, "
+            f"coordenadas UTM Este {data.get('utm_este')} m y Norte {data.get('utm_norte')} m, "
+            f"{data.get('datum_huso', 'WGS84 / Huso 18')}."
+        )
+
+    if not data.get("descripcion_proyecto"):
+        ha = data.get("hectareas_riego", "")
+        data["descripcion_proyecto"] = (
+            f"El proyecto corresponde a la regularización de un derecho de aprovechamiento de aguas subterráneas "
+            f"destinado al riego predial. El recurso será utilizado para abastecer una superficie agrícola bajo riego"
+            f"{f' de {fmt_num(ha, 2)} ha' if ha else ''}, fortaleciendo la actividad productiva familiar y permitiendo "
+            f"mejorar la eficiencia y seguridad hídrica del predio."
+        )
+
+    # Valores fijos para tus casos BLA: subterránea, consuntivo, permanente, continuo, riego + subsistencia.
+    data["tipo_persona"] = "Persona jurídica"
+    data["sexo"] = ""
+    data["naturaleza"] = "Subterránea"
+    data["tipo_derecho"] = "Consuntivo"
+    data["ejercicio_1"] = "Permanente"
+    data["ejercicio_2"] = "Continuo"
+    data["uso_agua"] = USOS_OPCIONES[0]
+    data["porcentaje_riego"] = 95.0
+    data["porcentaje_subsistencia"] = 5.0
+    data["personas_beneficiadas"] = 1
+
+    # Firmante: solo usar nombre/rut estructurado, nunca frases narrativas.
+    data["firmante_nombre"] = PETICIONARIO_EMPRESA["nombre"]
+    data["firmante_rut"] = PETICIONARIO_EMPRESA["rut"]
+
+    # Peticionario del formulario: empresa Irrisal, no beneficiario BLA.
+    data.update(PETICIONARIO_EMPRESA)
+    data["firmante_nombre"] = PETICIONARIO_EMPRESA["nombre"]
+    data["firmante_rut"] = PETICIONARIO_EMPRESA["rut"]
+
+    return {k: v for k, v in data.items() if v not in [None, ""]}
+
+# =============================================================================
+# AUTOCOMPLETAR DESDE AVALÚO FISCAL Y CONSERVADOR
+# =============================================================================
+
+def uploaded_file_to_text_any(uploaded_file) -> str:
+    """
+    Extrae texto desde PDF, JPG o PNG.
+    PDF con texto: usa PyMuPDF. PDF escaneado o imagen: usa OCR con Tesseract.
+    """
+    if uploaded_file is None:
+        return ""
+    name = (uploaded_file.name or "").lower()
+    raw = uploaded_file.getvalue()
     try:
-        total_depth = float(total_depth)
-        if total_depth <= 0:
-            return None
+        if name.endswith(".pdf"):
+            doc_pdf = fitz.open(stream=raw, filetype="pdf")
+            texts = []
+            for page in doc_pdf:
+                page_text = page.get_text("text") or ""
+                if page_text.strip():
+                    texts.append(page_text)
+            text_joined = "\n".join(texts).strip()
+            if len(text_joined) < 80:
+                ocr_texts = []
+                for page in list(doc_pdf)[:3]:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    ocr_texts.append(pytesseract.image_to_string(img, lang="spa"))
+                text_joined = "\n".join(ocr_texts)
+            return re.sub(r"[ \t]+", " ", text_joined)
+        img = Image.open(BytesIO(raw)).convert("RGB")
+        return re.sub(r"[ \t]+", " ", pytesseract.image_to_string(img, lang="spa"))
     except Exception:
-        return None
+        return ""
 
-    def _to_float_or_none(v):
-        try:
-            if v is None:
-                return None
-            if isinstance(v, str):
-                v = v.strip().replace(",", ".")
-                if v == "" or v.lower() in ["no informado", "dato no informado", "none", "nan"]:
-                    return None
-            out = float(v)
-            if pd.isna(out) or out <= 0:
-                return None
-            return out
-        except Exception:
-            return None
 
-    static_level = _to_float_or_none(static_level)
-    pump_depth = _to_float_or_none(pump_depth)
-    screen_from = _to_float_or_none(screen_from)
-    screen_to = _to_float_or_none(screen_to)
-    has_screen = screen_from is not None and screen_to is not None and screen_to > screen_from
+def normalize_doc_text(value: str) -> str:
+    value = value or ""
+    value = value.replace("\xa0", " ")
+    value = re.sub(r"[ \t]+", " ", value)
+    value = re.sub(r"\n{2,}", "\n", value)
+    return value.strip()
 
-    tipo = safe_text(capture.get("tipo"), "Captación")
-    diam_ent = safe_text(capture.get("diametro_entubacion"), "")
-    diam_perf = safe_text(capture.get("diametro_perforacion"), "")
-    material = safe_text(capture.get("material_tuberia"), "")
 
-    fig, ax = plt.subplots(figsize=(6.2, 8.7))
-    ax.set_xlim(0, 14)
-    ax.set_ylim(total_depth + max(2, total_depth * 0.08), -1.7)
-    ax.axis("off")
+def find_rol_sii(text_value: str) -> str:
+    text_value = normalize_doc_text(text_value)
+    patterns = [
+        r"(?:Rol|ROL|Rol de Aval[uú]o|Rol SII|N[°º]\s*Rol)\s*[:\-]?\s*([0-9]{1,6}\s*[-–]\s*[0-9]{1,6})",
+        r"\b([0-9]{1,6}\s*[-–]\s*[0-9]{1,6})\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text_value, flags=re.I)
+        if m:
+            return m.group(1).replace(" ", "").replace("–", "-")
+    return ""
 
-    # Fondo general
-    ax.add_patch(plt.Rectangle((0, -1.7), 14, total_depth + 4, facecolor="#fbfbf8", edgecolor="none"))
 
-    # Escala de profundidad
-    scale_x = 1.0
-    ax.plot([scale_x, scale_x], [0, total_depth], color="#444444", linewidth=1.0)
-    tick_step = 1 if total_depth <= 12 else 2 if total_depth <= 30 else 5
-    ticks = np.arange(0, total_depth + 0.01, tick_step)
-    for t in ticks:
-        ax.plot([scale_x - 0.15, scale_x + 0.15], [t, t], color="#444444", linewidth=0.8)
-        ax.text(scale_x - 0.25, t, f"{t:.0f}", ha="right", va="center", fontsize=7, color="#333333")
-    ax.text(scale_x - 0.55, total_depth / 2, "Profundidad (m)", ha="center", va="center",
-            fontsize=8, rotation=90, color="#333333")
+def find_surface_ha(text_value: str):
+    text_value = normalize_doc_text(text_value)
+    patterns = [
+        r"Superficie(?:\s+total)?\s*[:\-]?\s*([0-9]+(?:[\.,][0-9]+)?)\s*(?:ha|h[aá]s|hect[aá]reas)",
+        r"([0-9]+(?:[\.,][0-9]+)?)\s*(?:ha|h[aá]s|hect[aá]reas)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text_value, flags=re.I)
+        if m:
+            try: return to_float(m.group(1))
+            except Exception: pass
+    return None
 
-    # Estratigrafía lateral
-    strat_x0, strat_w = 1.55, 1.45
-    has_valid_strat = False
-    if stratigraphy_df is not None and not stratigraphy_df.empty:
-        valid_strat = stratigraphy_df.copy()
-        for col in ["Desde_m", "Hasta_m"]:
-            if col in valid_strat.columns:
-                valid_strat[col] = pd.to_numeric(valid_strat[col], errors="coerce")
-        if {"Desde_m", "Hasta_m"}.issubset(valid_strat.columns):
-            valid_strat = valid_strat.dropna(subset=["Desde_m", "Hasta_m"])
-            valid_strat = valid_strat[valid_strat["Hasta_m"] > valid_strat["Desde_m"]].head(12)
-            has_valid_strat = not valid_strat.empty
-        else:
-            valid_strat = pd.DataFrame()
-    else:
-        valid_strat = pd.DataFrame()
 
-    if has_valid_strat:
-        palette = ["#ead9c2", "#d8c8a8", "#c9d6b8", "#c8d8e4", "#d6d6d6", "#e2d2c4"]
-        for i, (_, row) in enumerate(valid_strat.iterrows()):
-            y0 = max(0, float(row["Desde_m"]))
-            y1 = min(total_depth, float(row["Hasta_m"]))
-            if y1 <= y0:
-                continue
-            color = palette[i % len(palette)]
-            ax.add_patch(plt.Rectangle((strat_x0, y0), strat_w, y1 - y0,
-                                       facecolor=color, edgecolor="#777777", linewidth=0.5))
-            desc = safe_text(row.get("Descripcion", ""), "")
-            label = f"{y0:g}-{y1:g} m"
-            if desc:
-                desc_short = desc[:24] + "…" if len(desc) > 24 else desc
-                label += f"\n{desc_short}"
-            ax.text(strat_x0 + strat_w/2, (y0+y1)/2, label, ha="center", va="center",
-                    fontsize=6.3, color="#333333", wrap=True)
-    else:
-        ax.add_patch(plt.Rectangle((strat_x0, 0), strat_w, total_depth,
-                                   facecolor="#f0e7d8", edgecolor="#777777", linewidth=0.5))
-        ax.text(strat_x0 + strat_w/2, total_depth/2, "Estratigrafía\nno informada",
-                ha="center", va="center", fontsize=7, color="#555555")
-    ax.text(strat_x0 + strat_w/2, -0.65, "Estratigrafía", ha="center",
-            va="bottom", fontsize=8, fontweight="bold", color="#006b2e")
+def find_comuna_from_text(text_value: str) -> str:
+    text_value = normalize_doc_text(text_value)
+    patterns = [
+        r"Comuna\s*[:\-]?\s*([A-Za-zÁÉÍÓÚÑáéíóúñüÜ\s]+?)(?:\n|Provincia|Regi[oó]n|Rol|$)",
+        r"Comuna de\s+([A-Za-zÁÉÍÓÚÑáéíóúñüÜ\s]+?)(?:\.|,|\n|$)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text_value, flags=re.I)
+        if m:
+            return clean_detected_value(m.group(1)).strip(" .,:;")
+    return ""
 
-    # Terreno y sello superficial
-    ax.plot([0.7, 13.2], [0, 0], color="#5a3d22", linewidth=2.0)
-    ax.add_patch(plt.Rectangle((3.2, -0.25), 4.1, 0.25, facecolor="#c9c9c9", edgecolor="#777777", linewidth=0.6))
-    ax.text(9.2, -0.35, "Nivel de terreno", ha="left", va="center", fontsize=7.5, color="#333333")
 
-    # Perforación y entubación
-    bore_x0, bore_x1 = 4.2, 6.4
-    casing_x0, casing_x1 = 4.72, 5.88
-    center_x = (casing_x0 + casing_x1) / 2
+def find_predio_from_avaluo(text_value: str) -> str:
+    text_value = normalize_doc_text(text_value)
+    patterns = [
+        r"(?:Nombre del predio|Predio|Direcci[oó]n predial|Ubicaci[oó]n)\s*[:\-]?\s*([^\n]{5,90})",
+        r"(?:Direcci[oó]n|Ubicaci[oó]n)\s*[:\-]?\s*([^\n]{5,90})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text_value, flags=re.I)
+        if m:
+            value = clean_detected_value(m.group(1))
+            if value and not re.search(r"servicio|impuestos|internos|certificado|aval[uú]o", value, re.I):
+                return value.strip(" .,:;")
+    return ""
 
-    ax.add_patch(plt.Rectangle((bore_x0, 0), bore_x1-bore_x0, total_depth,
-                               facecolor="#f6efe5", edgecolor="#7a7a7a", linewidth=1.0))
-    ax.text((bore_x0+bore_x1)/2, -0.65, "Perforación", ha="center", va="bottom",
-            fontsize=8, fontweight="bold", color="#006b2e")
 
-    ax.add_patch(plt.Rectangle((casing_x0, 0), casing_x1-casing_x0, total_depth,
-                               facecolor="#fdfdfd", edgecolor="#111111", linewidth=1.2))
-    ax.add_patch(plt.Rectangle((casing_x0+0.12, 0), casing_x1-casing_x0-0.24, total_depth,
-                               facecolor="#ffffff", edgecolor="#666666", linewidth=0.45))
+def find_cbr_data(text_value: str) -> dict[str, str]:
+    """
+    Extrae fojas, número, año y conservador desde una inscripción CBR.
+    Es más tolerante a OCR y formatos notariales/conservatorios.
+    """
+    original = normalize_doc_text(text_value)
+    flat = re.sub(r"\s+", " ", original)
 
-    # Columna de agua y nivel estático
-    water_start = static_level if static_level is not None and static_level < total_depth else total_depth
-    if static_level is not None and water_start < total_depth:
-        ax.add_patch(plt.Rectangle((casing_x0+0.18, water_start), casing_x1-casing_x0-0.36,
-                                   total_depth-water_start, facecolor="#d8eef8",
-                                   edgecolor="none", alpha=0.95))
-        ax.plot([casing_x0 - 0.35, casing_x1 + 0.35], [static_level, static_level],
-                color="#1877b7", linewidth=1.6)
-        ax.text(7.05, static_level, f"Nivel estático: {static_level:.2f} m",
-                ha="left", va="center", fontsize=7.5, color="#1877b7")
-        ax.plot([casing_x1 + 0.05, 6.95], [static_level, static_level],
-                color="#1877b7", linewidth=0.7)
+    # Normalizar errores OCR frecuentes sin perder el texto original
+    flat_norm = flat
+    flat_norm = flat_norm.replace("Nº", "N°").replace("Nro", "N°").replace("No ", "N° ")
+    flat_norm = re.sub(r"\bfoja\b", "fojas", flat_norm, flags=re.I)
 
-    # Cribas / tramo ranurado
-    if has_screen:
-        sf, stt = max(0, screen_from), min(total_depth, screen_to)
-        ax.add_patch(plt.Rectangle((casing_x0+0.12, sf), casing_x1-casing_x0-0.24, stt-sf,
-                                   facecolor="#e8f4e8", edgecolor="#1f7a3a", linewidth=1.0))
-        slot_count = max(5, int((stt - sf) / max(total_depth, 1) * 40))
-        for y in np.linspace(sf + 0.12, stt - 0.12, slot_count):
-            ax.plot([casing_x0+0.25, casing_x1-0.25], [y, y], color="#1f7a3a", linewidth=0.7)
-        ax.text(7.05, (sf+stt)/2, f"Cribas / tramo ranurado:\n{sf:.1f} - {stt:.1f} m",
-                ha="left", va="center", fontsize=7.3, color="#1f7a3a")
-        ax.plot([casing_x1, 6.95], [(sf+stt)/2, (sf+stt)/2], color="#1f7a3a", linewidth=0.7)
-    else:
-        ax.text(7.05, total_depth*0.62, "Cribas / tramo filtrante:\nNo informado",
-                ha="left", va="center", fontsize=7.3, color="#6a6a6a")
-        ax.plot([casing_x1, 6.95], [total_depth*0.62, total_depth*0.62],
-                color="#9a9a9a", linewidth=0.7, linestyle="--")
+    data: dict[str, str] = {}
 
-    # Bomba y columna
-    if pump_depth is not None and pump_depth < total_depth:
-        pump_h = max(total_depth * 0.035, 0.45)
-        ax.add_patch(plt.Rectangle((center_x-0.25, pump_depth-pump_h/2), 0.5, pump_h,
-                                   facecolor="#333333", edgecolor="#111111", linewidth=0.8))
-        ax.add_patch(plt.Rectangle((center_x-0.08, 0), 0.16, max(0, pump_depth-pump_h/2),
-                                   facecolor="#555555", edgecolor="none"))
-        ax.text(7.05, pump_depth, f"Bomba: {pump_depth:.1f} m",
-                ha="left", va="center", fontsize=7.5, color="#333333")
-        ax.plot([center_x+0.25, 6.95], [pump_depth, pump_depth], color="#333333", linewidth=0.7)
-    else:
-        ax.text(7.05, total_depth*0.82, "Profundidad de bomba:\nNo informada",
-                ha="left", va="center", fontsize=7.3, color="#6a6a6a")
-        ax.plot([casing_x1, 6.95], [total_depth*0.82, total_depth*0.82],
-                color="#9a9a9a", linewidth=0.7, linestyle="--")
+    patterns_combo = [
+        # "fojas 123 número 456 año 2020"
+        r"fojas?\s*([0-9]+)\s*(?:vta\.?|vuelta)?\s*(?:,|\.|\s)*\s*(?:N[°º]|n[uú]mero|numero|nro\.?)\s*([0-9]+).*?(?:año|ano|del año|del ano)\s*([12][0-9]{3})",
+        # "a fojas 123 ... Nº 456 ... Registro ... 2020"
+        r"a\s+fojas?\s*([0-9]+).*?(?:N[°º]|n[uú]mero|numero|nro\.?)\s*([0-9]+).*?([12][0-9]{3})",
+        # "Fojas: 123 / Número: 456 / Año: 2020"
+        r"Fojas?\s*[:\-]?\s*([0-9]+).*?(?:N[°º]|n[uú]mero|numero|nro\.?)\s*[:\-]?\s*([0-9]+).*?Año\s*[:\-]?\s*([12][0-9]{3})",
+    ]
 
-    # Fondo del pozo
-    ax.plot([casing_x0, casing_x1], [total_depth, total_depth], color="#111111", linewidth=1.2)
-    ax.text(7.05, total_depth, f"Profundidad total: {total_depth:.1f} m",
-            ha="left", va="center", fontsize=7.5, color="#333333")
-    ax.plot([casing_x1, 6.95], [total_depth, total_depth], color="#333333", linewidth=0.7)
+    for pat in patterns_combo:
+        m = re.search(pat, flat_norm, flags=re.I)
+        if m:
+            data["fojas"] = m.group(1)
+            data["numero_inscripcion"] = m.group(2)
+            data["anio_inscripcion"] = m.group(3)
+            break
 
-    # Caja de datos técnicos
-    info_lines = [f"Tipo: {tipo}"]
-    if diam_perf:
-        info_lines.append(f"Diám. perforación: {diam_perf}")
-    if diam_ent:
-        info_lines.append(f"Diám. entubación: {diam_ent}")
-    if material:
-        info_lines.append(f"Material: {material}")
-    info_text = "\n".join(info_lines)
+    if "fojas" not in data:
+        fojas = first_match(r"fojas?\s*[:\-]?\s*([0-9]+)", flat_norm)
+        if fojas:
+            data["fojas"] = fojas
 
-    box_h = max(1.2, 0.45 + 0.45 * len(info_lines))
-    ax.add_patch(plt.Rectangle((8.65, 0.55), 4.25, box_h,
-                               facecolor="#ffffff", edgecolor="#b0b0b0", linewidth=0.7))
-    ax.text(8.85, 0.88, info_text, ha="left", va="top", fontsize=7.4, color="#333333")
+    if "numero_inscripcion" not in data:
+        numero = first_match(r"(?:N[°º]|n[uú]mero|numero|nro\.?)\s*[:\-]?\s*([0-9]+)", flat_norm)
+        if numero:
+            data["numero_inscripcion"] = numero
 
-    # Título
-    ax.text(7.0, -1.25, "Esquema constructivo referencial de la captación",
-            ha="center", va="center", fontsize=10.5, fontweight="bold", color="#006b2e")
-    ax.text(7.0, -0.92, "Representación no a escala horizontal; profundidad representada en metros.",
-            ha="center", va="center", fontsize=7.2, color="#555555")
+    if "anio_inscripcion" not in data:
+        anio = first_match(r"(?:año|ano|del año|del ano|Registro de Propiedad del año)\s*[:\-]?\s*([12][0-9]{3})", flat_norm)
+        if not anio:
+            # Último recurso: primer año razonable cerca de "Registro de Propiedad"
+            m = re.search(r"Registro de Propiedad.{0,80}?([12][0-9]{3})", flat_norm, flags=re.I)
+            anio = m.group(1) if m else ""
+        if anio:
+            data["anio_inscripcion"] = anio
 
-    fig.tight_layout(pad=0.4)
-    buf = BytesIO()
-    fig.savefig(buf, format="png", dpi=220, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+    # Conservador
+    conservador_patterns = [
+        r"Conservador(?: de Bienes Ra[ií]ces)?\s+de\s+([A-Za-zÁÉÍÓÚÑáéíóúñüÜ\s]+?)(?:,|\.|\n| certifica|$)",
+        r"Conservador(?: de Bienes Ra[ií]ces)?\s*[:\-]\s*([A-Za-zÁÉÍÓÚÑáéíóúñüÜ\s]+?)(?:,|\.|\n|$)",
+        r"Registro de Propiedad.*?Conservador(?: de Bienes Ra[ií]ces)?\s+de\s+([A-Za-zÁÉÍÓÚÑáéíóúñüÜ\s]+?)(?:,|\.|\n|$)",
+    ]
+    for pat in conservador_patterns:
+        m = re.search(pat, flat_norm, flags=re.I)
+        if m:
+            cons = clean_detected_value(m.group(1)).strip(" .,:;")
+            cons = re.sub(r"\s+", " ", cons)
+            if cons and not re.search(r"fojas|numero|año|registro", cons, re.I):
+                data["conservador"] = _clean_conservador_value(cons)
+                break
+
+    return data
+
+def parse_avaluo_fiscal(uploaded_file) -> dict[str, Any]:
+    text_value = uploaded_file_to_text_any(uploaded_file)
+    data: dict[str, Any] = {}
+    rol = find_rol_sii(text_value)
+    if rol: data['rol_sii'] = rol
+    superficie = find_surface_ha(text_value)
+    if superficie is not None and superficie > 0:
+        data['hectareas_riego'] = superficie
+    comuna = find_comuna_from_text(text_value)
+    if comuna: data['comuna'] = comuna
+    predio = find_predio_from_avaluo(text_value)
+    if predio: data['predio'] = predio
+    return {k: v for k, v in data.items() if v not in [None, '']}
+
+
+def parse_conservador(uploaded_file) -> dict[str, Any]:
+    text_value = uploaded_file_to_text_any(uploaded_file)
+    data = find_cbr_data(text_value)
+    predio = first_match(r"(?:inmueble|predio|propiedad)\s+(?:ubicado|situado|denominado)?\s*(?:en)?\s*([^\n]{8,120})", text_value)
+    if predio:
+        predio = clean_detected_value(predio)
+        if predio and not re.search(r"inscripci[oó]n|fojas|registro|conservador", predio, re.I):
+            data.setdefault('predio', predio.strip(' .,:;'))
+    return {k: v for k, v in data.items() if v not in [None, '']}
+
 
 # =============================================================================
-# GENERACIÓN WORD
+# WORD HELPERS
 # =============================================================================
 
-def add_docx_heading(document, text_value: str, level: int = 1):
-    heading = document.add_heading(text_value, level=level)
-    heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    for run in heading.runs:
-        run.font.name = "Arial"
-        run.font.size = Pt(13)
-        run.bold = True
-        run.font.color.rgb = RGBColor(0, 107, 46)
-    heading.paragraph_format.line_spacing = 1.5
-    heading.paragraph_format.space_before = Pt(8)
-    heading.paragraph_format.space_after = Pt(6)
-    heading.paragraph_format.keep_with_next = True
-    heading.paragraph_format.keep_together = True
-    return heading
+
+def set_cell_shading(cell, fill: str = "D9D9D9"):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:fill"), fill)
+    tc_pr.append(shd)
 
 
-def add_docx_paragraph(document, text_value: str):
-    p = document.add_paragraph()
-    p.style = document.styles["Normal"]
-    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    p.paragraph_format.line_spacing = 1.5
-    p.paragraph_format.space_after = Pt(6)
-    # Evita que un párrafo asociado a un título se parta dejando una sola línea en la página.
-    p.paragraph_format.keep_together = True
-    run = p.add_run(safe_text(text_value, ""))
+def set_cell_border(cell, color="000000", sz="8"):
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    borders = tcPr.first_child_found_in("w:tcBorders")
+    if borders is None:
+        borders = OxmlElement("w:tcBorders")
+        tcPr.append(borders)
+    for edge in ("top", "left", "bottom", "right"):
+        tag = "w:" + edge
+        element = borders.find(qn(tag))
+        if element is None:
+            element = OxmlElement(tag)
+            borders.append(element)
+        element.set(qn("w:val"), "single")
+        element.set(qn("w:sz"), sz)
+        element.set(qn("w:space"), "0")
+        element.set(qn("w:color"), color)
+
+
+def set_cell_text(cell, text: str = "", bold: bool = False, size: float = 7.0, align=WD_ALIGN_PARAGRAPH.LEFT, shade: bool = False):
+    cell.text = ""
+    p = cell.paragraphs[0]
+    p.alignment = align
+    run = p.add_run(clean_text(text))
     run.font.name = "Arial"
-    run.font.size = Pt(11)
+    run.font.size = Pt(size)
+    run.bold = bold
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    set_cell_border(cell)
+    if shade:
+        set_cell_shading(cell)
+
+
+def merge_cells(row, start: int, end: int):
+    if end <= start:
+        return row.cells[start]
+    cell = row.cells[start]
+    for i in range(start + 1, end + 1):
+        cell = cell.merge(row.cells[i])
+    return cell
+
+
+def add_doc_heading(doc: Document, text: str, level: int = 1):
+    p = doc.add_paragraph()
+    p.paragraph_format.keep_with_next = True
+    p.paragraph_format.space_before = Pt(8)
+    p.paragraph_format.space_after = Pt(4)
+    run = p.add_run(text)
+    run.font.name = "Arial"
+    run.font.size = Pt(11 if level == 1 else 10)
+    run.bold = True
     return p
 
 
-
-def set_docx_row_cant_split(row):
-    """
-    Evita, cuando Word lo respeta, que una fila de tabla se corte entre páginas.
-    """
-    try:
-        trPr = row._tr.get_or_add_trPr()
-        cant_split = row._tr._new_cantSplit()
-        trPr.append(cant_split)
-    except Exception:
-        pass
+def add_doc_paragraph(doc: Document, text: str, size: float = 9.0, justify: bool = True):
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY if justify else WD_ALIGN_PARAGRAPH.LEFT
+    p.paragraph_format.line_spacing = 1.15
+    p.paragraph_format.space_after = Pt(5)
+    run = p.add_run(clean_text(text))
+    run.font.name = "Arial"
+    run.font.size = Pt(size)
+    return p
 
 
-def add_docx_table(document, rows: list[list], first_col_bold: bool = True):
-    if not rows:
-        return None
-
-    table = document.add_table(rows=len(rows), cols=len(rows[0]))
-    table.style = "Table Grid"
+def add_form_table(doc: Document, rows: int, cols: int, widths: list[float] | None = None):
+    table = doc.add_table(rows=rows, cols=cols)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.style = "Table Grid"
     table.autofit = True
-
-    for i, row in enumerate(rows):
-        try:
-            set_docx_row_cant_split(table.rows[i])
-        except Exception:
-            pass
-        for j, value in enumerate(row):
-            cell = table.cell(i, j)
-            cell.text = safe_text(value, "")
-            for p in cell.paragraphs:
-                p.paragraph_format.line_spacing = 1.15
-                p.paragraph_format.space_after = Pt(0)
-                for run in p.runs:
-                    run.font.name = "Arial"
-                    run.font.size = Pt(9)
-                    if first_col_bold and j == 0:
-                        run.bold = True
-    document.add_paragraph()
+    for row in table.rows:
+        for cell in row.cells:
+            set_cell_border(cell)
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
     return table
 
-def add_df_docx_table(document, df: pd.DataFrame, max_rows: int = 80):
-    if df is None or df.empty:
-        add_docx_paragraph(document, "Sin datos ingresados.")
-        return
 
-    show = df.head(max_rows).fillna("").copy()
-
-    if "Recuperacion_pct" in show.columns:
-        show["Recuperacion_pct"] = pd.to_numeric(show["Recuperacion_pct"], errors="coerce").map(
-            lambda x: "" if pd.isna(x) else f"{x:.2f}"
-        )
-
-    for col in show.columns:
-        if col != "Recuperacion_pct":
-            numeric = pd.to_numeric(show[col], errors="coerce")
-            if numeric.notna().sum() > 0 and numeric.notna().sum() >= len(show) * 0.5:
-                show[col] = numeric.map(lambda x: "" if pd.isna(x) else f"{x:.3f}".rstrip("0").rstrip("."))
-
-    table = document.add_table(rows=1, cols=len(show.columns))
-    table.style = "Table Grid"
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    table.autofit = True
-
-    hdr = table.rows[0].cells
-    for j, col in enumerate(show.columns):
-        hdr[j].text = str(col)
-        for p in hdr[j].paragraphs:
-            p.paragraph_format.line_spacing = 1.0
-            p.paragraph_format.space_after = Pt(0)
-            for run in p.runs:
-                run.font.name = "Arial"
-                run.bold = True
-                run.font.size = Pt(7)
-
-    for _, row in show.iterrows():
-        row_obj = table.add_row()
-        try:
-            set_docx_row_cant_split(row_obj)
-        except Exception:
-            pass
-        cells = row_obj.cells
-        for j, col in enumerate(show.columns):
-            cells[j].text = str(row[col])
-            for p in cells[j].paragraphs:
-                p.paragraph_format.line_spacing = 1.0
-                p.paragraph_format.space_after = Pt(0)
-                for run in p.runs:
-                    run.font.name = "Arial"
-                    run.font.size = Pt(7)
-
-    document.add_paragraph()
-
-def add_docx_picture_from_buffer(document, image_buffer: BytesIO | None, width_inches: float = 6.2):
-    if image_buffer is None:
-        add_docx_paragraph(document, "Imagen no disponible.")
-        return
-
-    try:
-        image_buffer.seek(0)
-        document.add_picture(image_buffer, width=Inches(width_inches))
-    except Exception:
-        add_docx_paragraph(document, "Imagen no disponible o no pudo insertarse.")
-
-
-def add_docx_picture_from_upload(document, uploaded_file, width_inches: float = 6.2):
-    if uploaded_file is None:
-        return False
-    try:
-        document.add_picture(BytesIO(uploaded_file.getvalue()), width=Inches(width_inches))
-        return True
-    except Exception:
-        return False
-
-
-
-# =============================================================================
-# TEXTOS NARRATIVOS AUTOMÁTICOS DEL INFORME
-# =============================================================================
-
-def _has_value(value) -> bool:
-    if value is None:
-        return False
-    try:
-        if pd.isna(value):
-            return False
-    except Exception:
-        pass
-    value = str(value).strip()
-    return bool(value) and value.lower() not in ["dato no informado", "no informado", "none", "nan", "0", "0.0"]
-
-
-def _phrase_value(value, suffix: str = "") -> str:
-    if not _has_value(value):
-        return "no informado"
-    return f"{value}{suffix}"
-
-
-def _format_duration_text(calculations: dict) -> str:
-    duration = calculations.get("duration_min")
-    if duration is None:
-        return "una duración no informada"
-    try:
-        duration = float(duration)
-    except Exception:
-        return "una duración no informada"
-
-    if duration >= 1440:
-        return f"{duration:.0f} minutos, equivalentes a 24 horas"
-    if duration >= 60:
-        hours = duration / 60
-        if abs(hours - round(hours)) < 0.01:
-            return f"{duration:.0f} minutos, equivalentes a {hours:.0f} horas"
-        return f"{duration:.0f} minutos, equivalentes a {hours:.1f} horas"
-    return f"{duration:.0f} minutos"
-
-
-def _format_location_text(project: dict, capture: dict) -> str:
-    sector = safe_text(project.get("sector"), "")
-    comuna = safe_text(project.get("comuna"), "")
-    region = safe_text(project.get("region"), "")
-
-    parts = []
-    if sector:
-        parts.append(f"sector {sector}")
-    if comuna:
-        parts.append(f"comuna de {comuna}")
-    if region:
-        parts.append(region)
-
-    if parts:
-        loc = ", ".join(parts)
-    else:
-        loc = "ubicación no informada"
-
-    utm_este = safe_text(capture.get("utm_este"), "")
-    utm_norte = safe_text(capture.get("utm_norte"), "")
-    datum = safe_text(capture.get("datum"), "")
-    huso = safe_text(capture.get("huso"), "")
-
-    if utm_este and utm_norte:
-        loc += f", con coordenadas UTM Este {utm_este} m y Norte {utm_norte} m"
-        if datum or huso:
-            loc += f", Datum/Huso {safe_text(datum, '')} {safe_text(huso, '')}".strip()
-    return loc
-
-
-def _stratigraphy_summary(stratigraphy_df: pd.DataFrame) -> str:
-    if stratigraphy_df is None or stratigraphy_df.empty:
-        return "No se ingresaron antecedentes estratigráficos detallados."
-
-    rows = []
-    for _, row in stratigraphy_df.head(5).iterrows():
-        desde = row.get("Desde_m", "")
-        hasta = row.get("Hasta_m", "")
-        desc = row.get("Descripcion", "")
-        if _has_value(desc):
-            if _has_value(desde) and _has_value(hasta):
-                rows.append(f"entre {desde} y {hasta} m se describe {str(desc).strip()}")
-            else:
-                rows.append(str(desc).strip())
-
-    if not rows:
-        return "No se ingresaron antecedentes estratigráficos detallados."
-
-    return "De acuerdo con la estratigrafía ingresada, " + "; ".join(rows) + "."
-
-
-def build_intro_text(project: dict, capture: dict, methodology: dict, calculations: dict) -> str:
-    cliente = safe_text(project.get("cliente"), "el cliente")
-    identificacion = safe_text(project.get("identificacion"), "la captación subterránea")
-    location = _format_location_text(project, capture)
-
-    return (
-        f"El presente informe detalla los registros de mediciones efectuadas durante la prueba de bombeo "
-        f"realizada en {identificacion}, correspondiente a {cliente}. La captación se ubica en {location}. "
-        f"El documento reúne los antecedentes generales de la captación, la metodología aplicada, los registros "
-        f"de nivel y caudal, la recuperación posterior al bombeo, los gráficos de comportamiento hidráulico y "
-        f"las conclusiones técnicas derivadas de la información ingresada."
-    )
-
-
-def build_methodology_text(project: dict, capture: dict, equipment: dict, methodology: dict, calculations: dict) -> str:
-    bomba = safe_text(equipment.get("bomba"), "equipo de bombeo no informado")
-    potencia = safe_text(equipment.get("potencia"), "potencia no informada")
-    profundidad_bomba = fmt(capture.get("profundidad_bomba"), " m")
-    tuberia = safe_text(capture.get("tuberia_extraccion"), "tubería de extracción no informada")
-    fecha = safe_text(methodology.get("fecha_prueba"), "fecha no informada")
-    hora_inicio = safe_text(methodology.get("hora_inicio"), "hora no informada")
-    hora_termino = safe_text(methodology.get("hora_termino"), "hora no informada")
-    modo = safe_text(methodology.get("modo_prueba"), "modalidad no informada")
-    caudal_obj = safe_text(methodology.get("caudal_objetivo"), "")
-    caudal_prom = fmt(calculations.get("q_mean"), " L/s")
-    duracion = _format_duration_text(calculations)
-    medidor_caudal = safe_text(equipment.get("medidor_caudal") or methodology.get("metodo_caudal"), "instrumento de medición de caudal no informado")
-    instrumento_nivel = safe_text(equipment.get("instrumento_nivel") or methodology.get("metodo_nivel"), "instrumento de medición de nivel no informado")
-    frecuencia = safe_text(methodology.get("frecuencia"), "frecuencia no informada")
-
-    caudal_text = f"a un caudal promedio calculado de {caudal_prom}"
-    if _has_value(caudal_obj):
-        caudal_text = f"considerando un caudal objetivo de {caudal_obj} y {caudal_text}"
-
-    return (
-        f"Para la ejecución de la prueba de bombeo se instaló {bomba}, con potencia {potencia}. "
-        f"El equipo se dispuso a una profundidad de {profundidad_bomba}, utilizando {tuberia}. "
-        f"El día {fecha}, a las {hora_inicio}, se dio inicio a la prueba bajo la modalidad {modo}, "
-        f"{caudal_text}. La medición de caudal se efectuó mediante {medidor_caudal}, mientras que "
-        f"los niveles dinámicos y de recuperación fueron controlados con {instrumento_nivel}. "
-        f"Las mediciones se registraron con una frecuencia {frecuencia}, extendiéndose el bombeo por {duracion}. "
-        f"Finalizado el bombeo a las {hora_termino}, se realizó el seguimiento de recuperación del nivel de agua "
-        f"para evaluar la respuesta posterior de la captación."
-    )
-
-
-def build_capture_characteristics_text(capture: dict, stratigraphy_df: pd.DataFrame) -> str:
-    tipo = safe_text(capture.get("tipo"), "captación subterránea")
-    profundidad = fmt(capture.get("profundidad_total"), " m")
-    diam_perf = safe_text(capture.get("diametro_perforacion"), "")
-    diam_ent = safe_text(capture.get("diametro_entubacion"), "")
-    material = safe_text(capture.get("material_tuberia"), "")
-    nivel_estatico = fmt(capture.get("nivel_estatico"), " m")
-    condicion = safe_text(capture.get("condicion"), "")
-    criba_desde = capture.get("criba_desde")
-    criba_hasta = capture.get("criba_hasta")
-    tuberia_ciega = safe_text(capture.get("tuberia_ciega"), "")
-    observaciones = safe_text(capture.get("observaciones"), "")
-
-    desc = (
-        f"La captación evaluada corresponde a {tipo}, con una profundidad total de {profundidad} "
-        f"y nivel estático inicial de {nivel_estatico}."
-    )
-
-    detalles = []
-    if _has_value(diam_perf):
-        detalles.append(f"diámetro de perforación {diam_perf}")
-    if _has_value(diam_ent):
-        detalles.append(f"diámetro de entubación {diam_ent}")
-    if _has_value(material):
-        detalles.append(f"revestimiento o tubería de {material}")
-    if _has_value(condicion):
-        detalles.append(f"condición {condicion}")
-
-    if detalles:
-        desc += " La habilitación considera " + ", ".join(detalles) + "."
-
-    if _has_value(criba_desde) and _has_value(criba_hasta):
-        desc += f" El tramo ranurado o de cribas informado se extiende desde {criba_desde} m hasta {criba_hasta} m."
-    else:
-        desc += " No se cuenta con antecedentes informados de cribas, ranuras o tramo filtrante, por lo que este dato se declara como no informado."
-
-    if _has_value(tuberia_ciega):
-        desc += f" Se informa además tubería ciega o tramo sin ranurar: {tuberia_ciega}."
-
-    desc += " " + _stratigraphy_summary(stratigraphy_df)
-
-    if _has_value(observaciones):
-        desc += f" Como observación de habilitación se registra: {observaciones}."
-
-    return desc.strip()
-
-
-def make_word_docx(
-    company: dict,
-    project: dict,
-    capture: dict,
-    stratigraphy_df: pd.DataFrame,
-    equipment: dict,
-    methodology: dict,
-    pumping_df: pd.DataFrame,
-    recovery_df: pd.DataFrame,
-    calculations: dict,
-    warnings: list[str],
-    location_image=None,
-    scheme_image=None,
-    signature_image=None,
-) -> bytes:
-    """
-    Genera informe Word editable (.docx) con la misma lógica del PDF.
-    El Word permite corrección manual posterior antes de firmar o transformar a PDF.
-    """
-    document = Document()
-
-    # Formato base Word: Arial 11, interlineado 1,5 en cuerpo.
-    normal_style = document.styles["Normal"]
-    normal_style.font.name = "Arial"
-    normal_style.font.size = Pt(11)
-    normal_style.paragraph_format.line_spacing = 1.5
-    normal_style.paragraph_format.space_after = Pt(6)
-
-
-    # Márgenes
-    section = document.sections[0]
-    section.top_margin = Inches(0.65)
-    section.bottom_margin = Inches(0.65)
-    section.left_margin = Inches(0.45)
-    section.right_margin = Inches(0.45)
-
-    # Encabezado con logo pequeño
-    header = section.header
-    hp = header.paragraphs[0]
-    hp.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    if LOGO_PATH.exists():
-        try:
-            hp.add_run().add_picture(str(LOGO_PATH), width=Inches(0.55))
-            hp.add_run("  ")
-        except Exception:
-            pass
-    run = hp.add_run(safe_text(company.get("empresa"), ""))
-    run.bold = True
-    run.font.size = Pt(8)
-    run.font.color.rgb = RGBColor(0, 107, 46)
-
-    # Pie de página
-    footer = section.footer
-    fp = footer.paragraphs[0]
-    fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    fr = fp.add_run(
-        f"{safe_text(company.get('direccion'), '')} | {safe_text(company.get('celular'), '')} | {safe_text(company.get('correo'), '')}"
-    )
-    fr.font.size = Pt(7)
-
-    # Portada
-    if LOGO_PATH.exists():
-        try:
-            p = document.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.add_run().add_picture(str(LOGO_PATH), width=Inches(2.4))
-        except Exception:
-            pass
-
-    title = document.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = title.add_run("INFORME DE PRUEBA DE BOMBEO")
-    r.bold = True
-    r.font.size = Pt(18)
-    r.font.color.rgb = RGBColor(0, 107, 46)
-
-    subtitle = document.add_paragraph()
-    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    sr = subtitle.add_run(safe_text(project.get("identificacion"), "Captación subterránea"))
-    sr.bold = True
-    sr.font.size = Pt(12)
-
-    add_docx_table(document, [
-        ["Cliente / Beneficiario", project.get("cliente")],
-        ["Proyecto", project.get("nombre_proyecto")],
-        ["Sector / Predio", project.get("sector")],
-        ["Comuna", project.get("comuna")],
-        ["Región", project.get("region")],
-        ["Fecha de prueba", methodology.get("fecha_prueba")],
-        ["Fecha de emisión", datetime.now().strftime("%d-%m-%Y")],
-        ["Consultor responsable", project.get("consultor")],
-    ])
-
-    p = document.add_paragraph()
+def add_signature_docx(doc: Document, data: dict, signature_file):
+    doc.add_paragraph()
+    p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.add_run(safe_text(company.get("empresa"))).bold = True
-    add_docx_paragraph(document, safe_text(company.get("direccion")))
-    add_docx_paragraph(document, f"Celular: {safe_text(company.get('celular'))} | Correo: {safe_text(company.get('correo'))}")
-
-    document.add_page_break()
-
-    add_docx_heading(document, "1. Introducción")
-    add_docx_paragraph(document, build_intro_text(project, capture, methodology, calculations))
-
-    add_docx_heading(document, "1.1 Antecedentes generales")
-    add_docx_paragraph(document,
-        "La información presentada a continuación corresponde a los antecedentes declarados para la prueba "
-        "y a los datos técnicos registrados durante el ensayo. Estos antecedentes permiten contextualizar "
-        "la ubicación de la captación, su habilitación y las condiciones bajo las cuales se efectuó la medición."
-    )
-
-    add_docx_heading(document, "1.2 Metodología de la prueba de bombeo")
-    add_docx_paragraph(document, build_methodology_text(project, capture, equipment, methodology, calculations))
-
-    add_docx_heading(document, "1.3 Características generales de la captación")
-    add_docx_paragraph(document, build_capture_characteristics_text(capture, stratigraphy_df))
-
-    add_docx_heading(document, "2. Síntesis de antecedentes generales")
-    add_docx_table(document, [
-        ["Cliente", project.get("cliente")],
-        ["Proyecto", project.get("nombre_proyecto")],
-        ["Identificación de captación", project.get("identificacion")],
-        ["Sector / Predio", project.get("sector")],
-        ["Comuna", project.get("comuna")],
-        ["Región", project.get("region")],
-        ["Consultor responsable", project.get("consultor")],
-        ["Observaciones generales", project.get("observaciones")],
-    ])
-
-    add_docx_heading(document, "3. Ubicación y habilitación de la captación")
-    cribas_text = (
-        f"Desde {capture.get('criba_desde')} m hasta {capture.get('criba_hasta')} m"
-        if capture.get("criba_desde") and capture.get("criba_hasta")
-        else "No informado"
-    )
-    add_docx_table(document, [
-        ["Tipo de captación", capture.get("tipo")],
-        ["Coordenada UTM Norte", capture.get("utm_norte")],
-        ["Coordenada UTM Este", capture.get("utm_este")],
-        ["Datum / Huso", f"{safe_text(capture.get('datum'))} / {safe_text(capture.get('huso'))}"],
-        ["Condición", capture.get("condicion")],
-        ["Profundidad total", fmt(capture.get("profundidad_total"), " m")],
-        ["Diámetro perforación", capture.get("diametro_perforacion")],
-        ["Diámetro entubación", capture.get("diametro_entubacion")],
-        ["Material / espesor tubería", capture.get("material_tuberia")],
-        ["Altura sobre terreno", capture.get("altura_sobre_terreno")],
-        ["Nivel estático inicial", fmt(capture.get("nivel_estatico"), " m")],
-        ["Cribas / ranuras", cribas_text],
-        ["Tubería ciega", capture.get("tuberia_ciega")],
-        ["Profundidad de bomba", fmt(capture.get("profundidad_bomba"), " m")],
-        ["Tubería extracción/succión", capture.get("tuberia_extraccion")],
-    ])
-
-    if location_image is not None:
-        ok = add_docx_picture_from_upload(document, location_image, width_inches=6.2)
-        if ok:
-            add_docx_paragraph(document, "Figura 1. Croquis o imagen de ubicación de la captación.")
-
-    add_docx_heading(document, "4. Esquema constructivo")
-    if scheme_image is not None:
-        ok = add_docx_picture_from_upload(document, scheme_image, width_inches=3.8)
-        if ok:
-            add_docx_paragraph(document, "Figura 2. Esquema constructivo de la captación.")
-    else:
-        scheme_buf = make_simple_well_scheme(capture, stratigraphy_df)
-        add_docx_picture_from_buffer(document, scheme_buf, width_inches=3.6)
-        add_docx_paragraph(document, "Figura 2. Esquema constructivo referencial de la captación.")
-
-    add_docx_heading(document, "5. Estratigrafía")
-    add_docx_paragraph(document, "La estratigrafía ingresada se presenta como antecedente descriptivo del material perforado o reconocido durante la habilitación.")
-    add_df_docx_table(document, stratigraphy_df)
-
-    add_docx_heading(document, "6. Equipos utilizados")
-    add_docx_table(document, [
-        ["Bomba", equipment.get("bomba")],
-        ["Potencia", equipment.get("potencia")],
-        ["Tubería de extracción", capture.get("tuberia_extraccion")],
-        ["Medidor de caudal", equipment.get("medidor_caudal")],
-        ["Instrumento de nivel", equipment.get("instrumento_nivel")],
-        ["Generador", equipment.get("generador")],
-    ])
-
-    add_docx_heading(document, "7. Parámetros metodológicos registrados")
-    add_docx_table(document, [
-        ["Modo de prueba", methodology.get("modo_prueba")],
-        ["Fecha de prueba", methodology.get("fecha_prueba")],
-        ["Hora inicio bombeo", methodology.get("hora_inicio")],
-        ["Hora término bombeo", methodology.get("hora_termino")],
-        ["Duración registrada", fmt(calculations.get("duration_min"), " min", decimals=0)],
-        ["Caudal objetivo", methodology.get("caudal_objetivo")],
-        ["Método de medición de caudal", methodology.get("metodo_caudal")],
-        ["Método de medición de niveles", methodology.get("metodo_nivel")],
-        ["Frecuencia de medición", methodology.get("frecuencia")],
-    ])
-
-    add_docx_heading(document, "8. Resultados calculados")
-    add_docx_table(document, [
-        ["Caudal promedio", fmt(calculations.get("q_mean"), " L/s")],
-        ["Caudal mínimo", fmt(calculations.get("q_min"), " L/s")],
-        ["Caudal máximo", fmt(calculations.get("q_max"), " L/s")],
-        ["Variación relativa de caudal", fmt(calculations.get("q_var_pct"), " %")],
-        ["Nivel estático inicial", fmt(capture.get("nivel_estatico"), " m")],
-        ["Nivel dinámico final", fmt(calculations.get("final_dynamic"), " m")],
-        ["Abatimiento final", fmt(calculations.get("drawdown"), " m")],
-        ["Caudal específico", fmt(calculations.get("specific_capacity"), " L/s/m")],
-        ["Volumen bombeado", fmt(calculations.get("volume_m3"), " m³")],
-        ["Pendiente final", fmt(calculations.get("slope_cm_h"), " cm/h")],
-        ["Evaluación estabilización", calculations.get("stabilization_message")],
-        ["Recuperación máxima", fmt(calculations.get("recovery_max"), " %")],
-        ["Tiempo a 75% recuperación", fmt(calculations.get("t75"), " min", decimals=0)],
-        ["Tiempo a 90% recuperación", fmt(calculations.get("t90"), " min", decimals=0)],
-        ["Tiempo a 100% recuperación", fmt(calculations.get("t100"), " min", decimals=0)],
-    ])
-
-    add_docx_heading(document, "9. Gráficos")
-    pump_chart = make_line_chart_image(pumping_df, "Tiempo_min", "Nivel_m", "Prueba de gasto constante", "Tiempo (min)", "Nivel/profundidad (m)", invert_y=True)
-    add_docx_picture_from_buffer(document, pump_chart, width_inches=7.45)
-    add_docx_paragraph(document, "Figura 3. Gráfico de prueba a caudal constante.")
-
-    rec_chart = make_line_chart_image(recovery_df, "Tiempo_min", "Nivel_m", "Prueba de recuperación", "Tiempo (min)", "Nivel/profundidad (m)", invert_y=True)
-    add_docx_picture_from_buffer(document, rec_chart, width_inches=6.6)
-    add_docx_paragraph(document, "Figura 4. Gráfico de recuperación de nivel.")
-
-    if recovery_df is not None and "Recuperacion_pct" in recovery_df.columns:
-        rec_pct_chart = make_line_chart_image(recovery_df, "Tiempo_min", "Recuperacion_pct", "Porcentaje de recuperación", "Tiempo (min)", "Recuperación (%)", invert_y=False)
-        add_docx_picture_from_buffer(document, rec_pct_chart, width_inches=6.6)
-        add_docx_paragraph(document, "Figura 5. Porcentaje de recuperación acumulada.")
-
-    add_docx_heading(document, "10. Tabla de prueba de gasto constante")
-    add_df_docx_table(document, pumping_df)
-
-    add_docx_heading(document, "11. Tabla de recuperación")
-    add_df_docx_table(document, recovery_df)
-
-    add_docx_heading(document, "12. Conclusiones")
-    for c in generate_conclusions(capture, calculations, warnings, methodology.get("modo_prueba", "")):
-        add_docx_paragraph(document, f"• {c}")
-
-    # Bloque de firma profesional, centrado y separado del texto.
-    spacer_p = document.add_paragraph()
-    spacer_p.paragraph_format.space_before = Pt(28)
-    spacer_p.paragraph_format.space_after = Pt(10)
-
-    if signature_image is not None:
+    if signature_file is not None:
         try:
-            sig_p = document.add_paragraph()
-            sig_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            sig_p.paragraph_format.space_before = Pt(2)
-            sig_p.paragraph_format.space_after = Pt(0)
-            sig_p.add_run().add_picture(BytesIO(signature_image.getvalue()), width=Inches(2.35))
+            p.add_run().add_picture(BytesIO(signature_file.getvalue()), width=Inches(2.2))
+        except Exception:
+            pass
+    p2 = doc.add_paragraph()
+    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p2.add_run("_____________________________________\nFirma y RUT del Solicitante o Representante Legal")
+    r.font.name = "Arial"
+    r.font.size = Pt(9)
+    r.bold = True
+    if data.get("firmante_nombre") or data.get("firmante_rut"):
+        p3 = doc.add_paragraph()
+        p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r3 = p3.add_run(f"{clean_text(data.get('firmante_nombre'))} - RUT {clean_text(data.get('firmante_rut'))}")
+        r3.font.name = "Arial"
+        r3.font.size = Pt(9)
+
+
+# =============================================================================
+# WORD GENERATION
+# =============================================================================
+
+
+def make_docx(data: dict[str, Any], signature_file=None, croquis_file=None) -> bytes:
+    data = force_peticionario_empresa(data)
+    data = _normalize_export_data(data)
+    """
+    Exporta Word con formato visual idéntico al formulario oficial.
+    Técnica usada: se genera primero el PDF sobre la plantilla oficial y luego se inserta
+    cada página renderizada como imagen a página completa en un DOCX tamaño oficio.
+    Esto mantiene la apariencia exacta, aunque el contenido no queda editable como texto.
+    """
+    pdf_bytes = make_pdf(data, signature_file=signature_file, croquis_file=croquis_file)
+    pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+    docx = Document()
+    sec = docx.sections[0]
+    sec.page_width = Inches(8.5)
+    sec.page_height = Inches(13)
+    sec.top_margin = Inches(0)
+    sec.bottom_margin = Inches(0)
+    sec.left_margin = Inches(0)
+    sec.right_margin = Inches(0)
+
+    for i, page in enumerate(pdf_doc):
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+        img_bytes = pix.tobytes("png")
+        if i > 0:
+            docx.add_page_break()
+        p = docx.add_paragraph()
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(0)
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.add_run().add_picture(BytesIO(img_bytes), width=Inches(8.5), height=Inches(13))
+
+    out = BytesIO()
+    docx.save(out)
+    out.seek(0)
+    return out.getvalue()
+
+
+# =============================================================================
+# PDF GENERATION
+# =============================================================================
+
+
+def pdf_styles():
+    s = getSampleStyleSheet()
+    s.add(ParagraphStyle("DGAHeader", parent=s["Normal"], fontSize=7, leading=8, fontName="Helvetica-Bold"))
+    s.add(ParagraphStyle("DGATitle", parent=s["Normal"], fontSize=16, leading=18, fontName="Helvetica-Bold", alignment=TA_CENTER))
+    s.add(ParagraphStyle("Section", parent=s["Normal"], fontSize=10, leading=12, fontName="Helvetica-Bold", spaceBefore=8, spaceAfter=4, keepWithNext=True))
+    s.add(ParagraphStyle("Body", parent=s["Normal"], fontSize=8.5, leading=11, fontName="Helvetica", alignment=TA_JUSTIFY))
+    s.add(ParagraphStyle("Cell", parent=s["Normal"], fontSize=7, leading=8.2, fontName="Helvetica"))
+    s.add(ParagraphStyle("CellBold", parent=s["Cell"], fontName="Helvetica-Bold"))
+    s.add(ParagraphStyle("Small", parent=s["Normal"], fontSize=6.6, leading=8, fontName="Helvetica"))
+    return s
+
+
+def P(text: Any, style):
+    return Paragraph(clean_text(text), style)
+
+
+def pdf_table(data, widths=None, shade_first_col=False):
+    styles = pdf_styles()
+    wrapped = []
+    for row in data:
+        wrapped.append([P(cell, styles["Cell"]) for cell in row])
+    t = Table(wrapped, colWidths=widths, repeatRows=0)
+    ts = [
+        ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]
+    if shade_first_col:
+        ts.append(("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#D9D9D9")))
+    t.setStyle(TableStyle(ts))
+    return t
+
+
+def pdf_shaded_table(data, widths=None, shaded_cells: list[tuple[int, int]] | None = None):
+    styles = pdf_styles()
+    wrapped = []
+    for row in data:
+        wrapped.append([P(cell, styles["Cell"]) for cell in row])
+    t = Table(wrapped, colWidths=widths)
+    ts = [
+        ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]
+    if shaded_cells:
+        for r, c in shaded_cells:
+            ts.append(("BACKGROUND", (c, r), (c, r), colors.HexColor("#D9D9D9")))
+    t.setStyle(TableStyle(ts))
+    return t
+
+
+def add_pdf_signature(story, data, signature_file, styles):
+    story.append(Spacer(1, 1.0 * cm))
+    if signature_file is not None:
+        try:
+            img = RLImage(BytesIO(signature_file.getvalue()), width=4.8 * cm, height=2.0 * cm)
+            tbl = Table([[img]], colWidths=[8 * cm])
+            tbl.hAlign = "CENTER"
+            tbl.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"), ("GRID", (0, 0), (-1, -1), 0, colors.white)]))
+            story.append(tbl)
+        except Exception:
+            pass
+    story.append(P("_____________________________________", ParagraphStyle("Sig", parent=styles["Body"], alignment=TA_CENTER, fontSize=9, leading=11, fontName="Helvetica-Bold")))
+    story.append(P("Firma y RUT del Solicitante o Representante Legal", ParagraphStyle("Sig2", parent=styles["Body"], alignment=TA_CENTER, fontSize=8, leading=10, fontName="Helvetica-Bold")))
+    if data.get("firmante_nombre") or data.get("firmante_rut"):
+        story.append(P(f"{clean_text(data.get('firmante_nombre'))} - RUT {clean_text(data.get('firmante_rut'))}", ParagraphStyle("Sig3", parent=styles["Body"], alignment=TA_CENTER, fontSize=8, leading=10)))
+
+
+def fmt_num_blank(value: Any, decimals: int = 2) -> str:
+    if value is None or clean_text(value) == "":
+        return ""
+    n = to_float(value, 0.0)
+    if n == 0:
+        return ""
+    return fmt_num(n, decimals)
+
+
+def _pdf_text(page, x, y, w, h, value, size=8.5, bold=False, align=0):
+    """
+    Escribe texto sobre la plantilla oficial en coordenadas PDF.
+    """
+    value = clean_text(value)
+    if not value:
+        return
+    fontname = "helv"
+    page.insert_textbox(
+        fitz.Rect(x, y, x + w, y + h),
+        value,
+        fontsize=size,
+        fontname=fontname,
+        color=(0, 0, 0),
+        align=align,
+    )
+
+
+def _coord_digits(value: Any, n_boxes: int) -> str:
+    """
+    Normaliza coordenadas UTM para escribir un dígito por casilla.
+    Corrige casos como 5869412.0, 5.869.412 o 747.711.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        try:
+            raw = str(int(float(value)))
+        except Exception:
+            raw = ""
+    else:
+        s = clean_text(value)
+        m = re.match(r"^\s*([0-9]+)(?:\.0+)?\s*$", s)
+        if m:
+            raw = m.group(1)
+        else:
+            raw = re.sub(r"[^0-9]", "", s)
+
+    if not raw:
+        return ""
+    # Quitar falso decimal .0 capturado como un cero extra
+    if len(raw) == n_boxes + 1 and raw.endswith("0"):
+        raw = raw[:-1]
+    if len(raw) > n_boxes:
+        raw = raw[-n_boxes:]
+    return raw.rjust(n_boxes)
+
+
+def _pdf_digits_in_boxes(page, x0, y0, cell_w, h, value, n_boxes, size=9.0):
+    """
+    Escribe coordenadas UTM con un dígito por casilla.
+    """
+    raw = _coord_digits(value, n_boxes)
+    if not raw:
+        return
+    for i, ch in enumerate(raw):
+        if not ch.strip():
+            continue
+        page.insert_textbox(
+            fitz.Rect(x0 + i * cell_w, y0, x0 + (i + 1) * cell_w, y0 + h),
+            ch,
+            fontsize=size,
+            fontname="helv",
+            color=(0, 0, 0),
+            align=1,
+        )
+
+
+def _pdf_cell_text(page, x0, y0, x1, y1, value, size=8.0, bold=False, align=1):
+    value = clean_text(value)
+    if not value:
+        return
+    page.insert_textbox(
+        fitz.Rect(x0, y0, x1, y1),
+        value,
+        fontsize=size,
+        fontname="helv",
+        color=(0, 0, 0),
+        align=align,
+    )
+
+
+def _pdf_draw_cell(page, x0, y0, x1, y1, fill=None, width=0.7):
+    if fill is not None:
+        page.draw_rect(fitz.Rect(x0, y0, x1, y1), color=(0, 0, 0), fill=fill, width=width, overlay=True)
+    else:
+        page.draw_rect(fitz.Rect(x0, y0, x1, y1), color=(0, 0, 0), width=width, overlay=True)
+
+
+def _pdf_label(page, x0, y0, x1, y1, text_value, size=8.0, bold=False, align=1):
+    page.insert_textbox(
+        fitz.Rect(x0, y0, x1, y1),
+        clean_text(text_value),
+        fontsize=size,
+        fontname="helv",
+        color=(0, 0, 0),
+        align=align,
+    )
+
+
+def _draw_custom_42_43(page, data: dict[str, Any]):
+    """
+    Redibuja la página 4 solo con los puntos aplicables: 4.2 y 4.3.
+    Se elimina visualmente el bloque 4.1 Agua Potable, porque estos expedientes
+    son de riego + uso doméstico de subsistencia.
+    """
+    # Limpiar toda el área del punto 4 original, manteniendo solo margen y número de página.
+    page.draw_rect(fitz.Rect(0, 45, 612, 875), color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+
+    region = _region_text(data.get("region"))
+    provincia = clean_text(data.get("provincia")) or "Biobío"
+    comuna = clean_text(data.get("comuna")).title()
+    predio = _clean_predio_value(data.get("predio"))
+    rol = clean_text(data.get("rol_sii"))
+    has = fmt_num_blank(data.get("hectareas_riego"), 2)
+    personas = fmt_num(data.get("personas_beneficiadas"), 0)
+    fojas = clean_text(data.get("fojas"))
+    numero = clean_text(data.get("numero_inscripcion"))
+    anio = clean_text(data.get("anio_inscripcion"))
+    conservador = _clean_conservador_value(data.get("conservador"))
+
+    gray = (0.86, 0.86, 0.86)
+
+    # Título general del punto 4
+    _pdf_label(page, 46, 58, 560, 78, "4. Antecedentes complementarios del proyecto", size=13, bold=True, align=0)
+    _pdf_label(page, 46, 76, 560, 93, "(complete según el o los usos del derecho de agua requerido por el proyecto, de acuerdo a lo señalado en el numeral 3.3.)", size=7.4, align=0)
+
+    # ===== 4.2 =====
+    _pdf_label(page, 58, 115, 560, 136, "4.2. Antecedentes requeridos para uso Doméstico de Subsistencia", size=12, bold=True, align=0)
+
+    x0, y0, x1 = 70, 158, 545
+    left_w = 93
+    col_w = (x1 - x0 - left_w) / 3
+    y_header = y0 + 22
+    y_values = y0 + 55
+    y_bottom = y0 + 105
+
+    _pdf_draw_cell(page, x0, y0, x0 + left_w, y_values, fill=None)
+    _pdf_label(page, x0 + 3, y0 + 14, x0 + left_w - 3, y_values - 6, "Antecedentes\nde ubicación", size=8.3, bold=True, align=1)
+    for i, lab in enumerate(["Región", "Provincia", "Comuna"]):
+        xa = x0 + left_w + i * col_w
+        xb = xa + col_w
+        _pdf_draw_cell(page, xa, y0, xb, y_header, fill=gray)
+        _pdf_label(page, xa, y0 + 4, xb, y_header - 2, lab, size=8.2, bold=True)
+        _pdf_draw_cell(page, xa, y_header, xb, y_values, fill=None)
+    _pdf_cell_text(page, x0 + left_w, y_header + 9, x0 + left_w + col_w, y_values - 3, region, size=7.4)
+    _pdf_cell_text(page, x0 + left_w + col_w, y_header + 9, x0 + left_w + 2*col_w, y_values - 3, provincia, size=7.4)
+    _pdf_cell_text(page, x0 + left_w + 2*col_w, y_header + 9, x1, y_values - 3, comuna, size=7.4)
+
+    _pdf_draw_cell(page, x0, y_values, x0 + left_w, y_bottom, fill=None)
+    _pdf_label(page, x0 + 3, y_values + 12, x0 + left_w - 3, y_bottom - 6, "Antecedentes\nrequeridos", size=8.3, bold=True)
+    _pdf_draw_cell(page, x0 + left_w, y_values, x1 - 125, y_bottom, fill=gray)
+    _pdf_label(page, x0 + left_w + 5, y_values + 21, x1 - 125, y_bottom - 10, "N° de personas beneficiadas (valor en números)", size=7.8, bold=True, align=0)
+    _pdf_draw_cell(page, x1 - 125, y_values, x1, y_bottom, fill=None)
+    _pdf_cell_text(page, x1 - 125, y_values + 18, x1, y_bottom - 4, personas, size=8.2)
+
+    # ===== 4.3 =====
+    _pdf_label(page, 58, 305, 560, 326, "4.3. Antecedentes requeridos para uso en Riego", size=12, bold=True, align=0)
+
+    x0, y0, x1 = 70, 350, 545
+    left_w = 93
+    col_w = (x1 - x0 - left_w) / 3
+    y_header = y0 + 22
+    y_values = y0 + 55
+    y_predio_label = y_values
+    y_predio_value = y_values + 30
+    y_rol = y_predio_value + 34
+    y_bottom = y_rol + 34
+
+    _pdf_draw_cell(page, x0, y0, x0 + left_w, y_bottom, fill=None)
+    _pdf_label(page, x0 + 3, y0 + 48, x0 + left_w - 3, y_bottom - 30, "Antecedentes\nde ubicación", size=8.3, bold=True)
+
+    for i, lab in enumerate(["Región", "Provincia", "Comuna"]):
+        xa = x0 + left_w + i * col_w
+        xb = xa + col_w
+        _pdf_draw_cell(page, xa, y0, xb, y_header, fill=gray)
+        _pdf_label(page, xa, y0 + 4, xb, y_header - 2, lab, size=8.2, bold=True)
+        _pdf_draw_cell(page, xa, y_header, xb, y_values, fill=None)
+
+    _pdf_cell_text(page, x0 + left_w, y_header + 9, x0 + left_w + col_w, y_values - 3, region, size=7.4)
+    _pdf_cell_text(page, x0 + left_w + col_w, y_header + 9, x0 + left_w + 2*col_w, y_values - 3, provincia, size=7.4)
+    _pdf_cell_text(page, x0 + left_w + 2*col_w, y_header + 9, x1, y_values - 3, comuna, size=7.4)
+
+    _pdf_draw_cell(page, x0 + left_w, y_predio_label, x1, y_predio_value, fill=gray)
+    _pdf_label(page, x0 + left_w + 5, y_predio_label + 5, x1 - 5, y_predio_value - 3, "Nombre del predio beneficiado", size=7.8, bold=True, align=0)
+    _pdf_draw_cell(page, x0 + left_w, y_predio_value, x1, y_rol, fill=None)
+    _pdf_cell_text(page, x0 + left_w + 4, y_predio_value + 9, x1 - 4, y_rol - 3, predio, size=7.4, align=0)
+
+    _pdf_draw_cell(page, x0 + left_w, y_rol, x0 + left_w + 72, y_bottom, fill=gray)
+    _pdf_label(page, x0 + left_w + 4, y_rol + 9, x0 + left_w + 72, y_bottom - 4, "N° Rol SII", size=7.8, bold=True)
+    _pdf_draw_cell(page, x0 + left_w + 72, y_rol, x0 + left_w + 230, y_bottom, fill=None)
+    _pdf_cell_text(page, x0 + left_w + 72, y_rol + 9, x0 + left_w + 230, y_bottom - 4, rol, size=7.6)
+    _pdf_draw_cell(page, x0 + left_w + 230, y_rol, x0 + left_w + 330, y_bottom, fill=gray)
+    _pdf_label(page, x0 + left_w + 230, y_rol + 9, x0 + left_w + 330, y_bottom - 4, "N° Hás a regar", size=7.8, bold=True)
+    _pdf_draw_cell(page, x0 + left_w + 330, y_rol, x1, y_bottom, fill=None)
+    _pdf_cell_text(page, x0 + left_w + 330, y_rol + 9, x1, y_bottom - 4, has, size=7.6)
+
+    # Antecedentes legales
+    y0 = y_bottom + 26
+    y1 = y0 + 25
+    y2 = y1 + 34
+    y3 = y2 + 34
+    y4 = y3 + 34
+    x_left = 70
+    x_label = 230
+    x_val = 330
+    x_cons = 545
+
+    _pdf_draw_cell(page, x_left, y0, x_label, y4, fill=None)
+    _pdf_label(page, x_left + 3, y0 + 42, x_label - 3, y4 - 35, "Antecedentes legales del\npredio", size=8.3, bold=True)
+    _pdf_draw_cell(page, x_label, y0, x_cons, y1, fill=gray)
+    _pdf_label(page, x_label, y0 + 6, x_cons, y1 - 2, "Inscripción del predio en Conservador de Bienes Raíces", size=8.2, bold=True)
+
+    _pdf_draw_cell(page, x_label, y1, x_val, y2, fill=gray)
+    _pdf_label(page, x_label + 4, y1 + 10, x_val, y2 - 4, "Fojas", size=8.1, bold=True, align=0)
+    _pdf_draw_cell(page, x_val, y1, 405, y2, fill=None)
+    _pdf_cell_text(page, x_val, y1 + 10, 405, y2 - 4, fojas, size=7.8)
+
+    _pdf_draw_cell(page, x_label, y2, x_val, y3, fill=gray)
+    _pdf_label(page, x_label + 4, y2 + 10, x_val, y3 - 4, "Número", size=8.1, bold=True, align=0)
+    _pdf_draw_cell(page, x_val, y2, 405, y3, fill=None)
+    _pdf_cell_text(page, x_val, y2 + 10, 405, y3 - 4, numero, size=7.8)
+
+    _pdf_draw_cell(page, x_label, y3, x_val, y4, fill=gray)
+    _pdf_label(page, x_label + 4, y3 + 10, x_val, y4 - 4, "Año", size=8.1, bold=True, align=0)
+    _pdf_draw_cell(page, x_val, y3, 405, y4, fill=None)
+    _pdf_cell_text(page, x_val, y3 + 10, 405, y4 - 4, anio, size=7.8)
+
+    _pdf_draw_cell(page, 405, y1, x_cons, y2, fill=gray)
+    _pdf_label(page, 405, y1 + 10, x_cons, y2 - 4, "Conservador", size=8.1, bold=True)
+    _pdf_draw_cell(page, 405, y2, x_cons, y4, fill=None)
+    _pdf_cell_text(page, 405, y2 + 25, x_cons, y4 - 4, conservador, size=7.8)
+
+    _pdf_text(page, 70, y4 + 20, 475, 30, "Se adjunta copia de la inscripción conservatoria vigente del predio y antecedentes legales de respaldo para la tramitación.", size=7.0)
+
+
+def _build_location_description(data: dict[str, Any]) -> str:
+    # Si hay descripción manual, usarla solo si no es genérica.
+    desc = clean_text(data.get("descripcion_ubicacion"))
+    if desc and "antecedentes técnicos" not in desc.lower():
+        return desc
+    comuna = clean_text(data.get("comuna"))
+    predio = _clean_predio_value(data.get("predio"))
+    este = clean_text(data.get("utm_este"))
+    norte = clean_text(data.get("utm_norte"))
+    datum = clean_text(data.get("datum_huso"), "WGS84 / Huso 18")
+    partes = []
+    if predio:
+        partes.append(f"La captación se ubica en el predio {predio}")
+    else:
+        partes.append("La captación se ubica en el predio individualizado en los antecedentes del expediente")
+    if comuna:
+        partes.append(f"comuna de {comuna}")
+    if este and norte:
+        partes.append(f"coordenadas UTM Este {este} m y Norte {norte} m, {datum}")
+    else:
+        partes.append(f"con ubicación respaldada por los antecedentes técnicos y cartográficos adjuntos, {datum}")
+    return ", ".join(partes) + ". La obra corresponde a una captación de aguas subterráneas destinada al abastecimiento de riego predial y uso doméstico de subsistencia."
+
+
+def _build_project_description(data: dict[str, Any]) -> str:
+    desc = clean_text(data.get("descripcion_proyecto"))
+    # Evitar texto excesivamente largo de informe, usarlo si parece bien formado y no se superpone.
+    if desc and len(desc) <= 650 and "caudal de l/s" not in desc.lower():
+        return desc
+    ha_val = to_float(data.get("hectareas_riego"), 0)
+    ha_txt = f"aproximadamente {fmt_num(ha_val, 2)} ha" if ha_val > 0 else "la superficie predial indicada en los antecedentes"
+    comuna = clean_text(data.get("comuna"))
+    predio = _clean_predio_value(data.get("predio"))
+    caudal = fmt_num_blank(data.get("caudal_l_s"), 2)
+    caudal_txt = f"por un caudal de {caudal} l/s" if caudal else "por el caudal indicado en la solicitud"
+    return (
+        f"El proyecto corresponde a la solicitud de un derecho de aprovechamiento de aguas subterráneas, "
+        f"de carácter consuntivo, permanente y continuo, {caudal_txt}. "
+        f"El recurso será destinado principalmente al riego predial y, en menor proporción, al uso doméstico de subsistencia. "
+        f"La captación abastecerá el predio {predio}, ubicado en la comuna de {comuna}, permitiendo regar {ha_txt}, "
+        f"mejorar la seguridad hídrica del sistema productivo y respaldar la actividad agrícola familiar."
+    )
+
+
+def _build_additional_info(data: dict[str, Any]) -> str:
+    caudal = fmt_num_blank(data.get("caudal_l_s"), 2)
+    ha_val = to_float(data.get("hectareas_riego"), 0)
+    ha_txt = f"una superficie aproximada de {fmt_num(ha_val, 2)} ha bajo riego" if ha_val > 0 else "la superficie agrícola declarada en los antecedentes"
+    caudal_txt = f"por un caudal solicitado de {caudal} l/s" if caudal else "por el caudal indicado en la solicitud"
+    comuna = clean_text(data.get("comuna"))
+    predio = _clean_predio_value(data.get("predio"))
+    return (
+        f"La solicitud se fundamenta en la regularización de una captación de aguas subterráneas destinada principalmente al riego del predio {predio}, "
+        f"ubicado en la comuna de {comuna}, {caudal_txt} y {ha_txt}. "
+        f"El uso doméstico de subsistencia se considera como uso complementario y minoritario del recurso. "
+        f"Se adjuntan antecedentes técnicos, cartográficos y legales de respaldo, incluyendo informe técnico, avalúo fiscal, inscripción conservatoria vigente y croquis de ubicación."
+    )
+
+
+def _add_signature_to_pdf_page(page, signature_file, data):
+    """
+    Firma en página final del formulario oficial.
+
+    Ajuste v2.5: la firma PNG se inserta centrada en el espacio blanco
+    inmediatamente sobre la línea oficial de firma. No se agrega texto bajo
+    la línea, porque el formulario ya contiene la leyenda "Firma y RUT del
+    Solicitante o Representante Legal". Esto evita que la firma o el texto
+    aparezcan fuera del espacio asignado.
+    """
+    if signature_file is not None:
+        try:
+            # Espacio útil sobre la línea de firma de la página 10 del formulario.
+            # Coordenadas calibradas para tamaño carta/oficio del PDF oficial.
+            sig_rect = fitz.Rect(205, 455, 405, 535)
+            page.insert_image(sig_rect, stream=signature_file.getvalue(), keep_proportion=True, overlay=True)
         except Exception:
             pass
 
-    line_p = document.add_paragraph()
-    line_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    line_p.paragraph_format.space_before = Pt(0)
-    line_p.paragraph_format.space_after = Pt(2)
-    line_run = line_p.add_run("____________________________")
-    line_run.font.name = "Arial"
-    line_run.font.size = Pt(11)
 
-    name_p = document.add_paragraph()
-    name_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    name_p.paragraph_format.space_before = Pt(0)
-    name_p.paragraph_format.space_after = Pt(0)
-    name_run = name_p.add_run("David Gutiérrez Jara")
-    name_run.font.name = "Arial"
-    name_run.font.size = Pt(11)
-    name_run.bold = True
-
-    title_p = document.add_paragraph()
-    title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title_p.paragraph_format.space_before = Pt(0)
-    title_p.paragraph_format.space_after = Pt(0)
-    title_run = title_p.add_run("Ingeniero Agrónomo")
-    title_run.font.name = "Arial"
-    title_run.font.size = Pt(11)
-
-    output = BytesIO()
-    document.save(output)
-    output.seek(0)
-    return output.getvalue()
-
-
-# =============================================================================
-# GENERACIÓN PDF
-# =============================================================================
-
-def generate_conclusions(capture: dict, calculations: dict, warnings: list[str], test_mode: str) -> list[str]:
-    tipo = safe_text(capture.get("tipo"), "")
-    duration = calculations.get("duration_min")
-    q_mean = calculations.get("q_mean")
-    stab_meets = calculations.get("stabilization_meets")
-    rec_max = calculations.get("recovery_max")
-
-    conclusions = []
-
-    if q_mean is not None:
-        conclusions.append(
-            f"Durante el periodo medido, la prueba se desarrolló con un caudal promedio de {fmt(q_mean, ' L/s')}."
-        )
-
-    if calculations.get("drawdown") is not None:
-        conclusions.append(
-            f"El abatimiento final calculado fue de {fmt(calculations.get('drawdown'), ' m')}, con un caudal específico de {fmt(calculations.get('specific_capacity'), ' L/s/m')}."
-        )
-
-    if calculations.get("stabilization_evaluable"):
-        if stab_meets:
-            conclusions.append(
-                "La captación presenta estabilización o franca tendencia a estabilización bajo el criterio de variación ≤ 2 cm/h en los últimos 180 minutos evaluados."
-            )
-        else:
-            conclusions.append(
-                "La captación no presenta estabilización bajo el criterio de variación ≤ 2 cm/h en los últimos 180 minutos evaluados."
-            )
-    else:
-        conclusions.append(
-            "La estabilización no es evaluable con los datos disponibles."
-        )
-
-    if rec_max is not None:
-        conclusions.append(
-            f"La recuperación máxima observada alcanzó {fmt(rec_max, ' %')}. La interpretación de recuperación debe considerar la duración real del seguimiento posterior al bombeo."
-        )
-
-    if tipo == "Pozo profundo" and duration is not None and duration < 1440:
-        conclusions.append(
-            "La prueba corresponde a un ensayo de duración menor a 24 horas para pozo profundo. Sus resultados permiten una evaluación operativa del comportamiento de la captación durante el periodo medido, pero no reemplazan una prueba estándar de 24 horas cuando esta sea exigida."
-        )
-
-    if "abreviado" in test_mode.lower() or (duration is not None and duration <= 180):
-        conclusions.append(
-            "El ensayo abreviado debe interpretarse como antecedente técnico preliminar y sus conclusiones deben restringirse al periodo efectivamente medido."
-        )
-
-    conclusions.append(
-        "El informe se basa exclusivamente en datos ingresados o importados por el usuario. El sistema no rellena mediciones faltantes ni presenta datos estimados como medidos."
-    )
-
-    return conclusions
-
-
-def generate_recommendations(capture: dict, calculations: dict, warnings: list[str]) -> list[str]:
-    recs = []
-    tipo = safe_text(capture.get("tipo"), "")
-    rec_max = calculations.get("recovery_max")
-
-    if not calculations.get("stabilization_evaluable"):
-        recs.append("Registrar al menos 180 minutos de mediciones continuas para evaluar tendencia de estabilización.")
-    elif calculations.get("stabilization_meets"):
-        recs.append("Mantener como referencia el caudal ensayado, siempre que las condiciones de operación y recuperación se mantengan similares.")
-    else:
-        recs.append("Evaluar una reducción del caudal de operación o repetir la prueba con mayor duración para definir un caudal más conservador.")
-
-    if rec_max is None or rec_max < 75:
-        recs.append("Extender la medición de recuperación hasta alcanzar al menos 75% de recuperación, idealmente hasta recuperación completa o estabilización clara.")
-
-    if tipo == "Puntera":
-        recs.append("Para punteras, habilitar piezómetro de control para medición de niveles, evitando interpretar niveles directamente desde la tubería de extracción.")
-
-    if calculations.get("is_constant") is False:
-        recs.append("Mejorar el control del caudal durante la prueba para asegurar condiciones de gasto constante.")
-
-    recs.append("Conservar respaldo de planillas, fotografías, ubicación y equipos utilizados como anexos del expediente técnico.")
-
-    return recs
-
-
-def make_pdf(
-    company: dict,
-    project: dict,
-    capture: dict,
-    stratigraphy_df: pd.DataFrame,
-    equipment: dict,
-    methodology: dict,
-    pumping_df: pd.DataFrame,
-    recovery_df: pd.DataFrame,
-    calculations: dict,
-    warnings: list[str],
-    location_image=None,
-    scheme_image=None,
-    signature_image=None,
-) -> bytes:
-    buffer = BytesIO()
-    styles = get_styles()
-
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=1.5 * cm,
-        leftMargin=1.5 * cm,
-        topMargin=1.85 * cm,
-        bottomMargin=1.45 * cm,
-    )
-
-    def later_pages(canvas, doc_obj):
-        report_header_footer(canvas, doc_obj, company)
-
-    story = []
-
-    # -------------------------------------------------------------------------
-    # PORTADA
-    # -------------------------------------------------------------------------
-    if LOGO_PATH.exists():
-        logo_flow = rl_image_preserve_aspect(LOGO_PATH, max_width_cm=6.2, max_height_cm=3.4)
-        if logo_flow:
-            story.append(logo_flow)
-            story.append(Spacer(1, 0.35 * cm))
-
-    story.append(Spacer(1, 0.25 * cm))
-    story.append(Paragraph("INFORME DE PRUEBA DE BOMBEO", styles["CoverTitle"]))
-    story.append(Paragraph(f"<b>{safe_text(project.get('identificacion'), 'Captación subterránea')}</b>", styles["CoverSubtitle"]))
-    story.append(Spacer(1, 0.5 * cm))
-
-    cover_data = [
-        ["Cliente / Beneficiario", project.get("cliente")],
-        ["Proyecto", project.get("nombre_proyecto")],
-        ["Sector / Predio", project.get("sector")],
-        ["Comuna", project.get("comuna")],
-        ["Región", project.get("region")],
-        ["Fecha de prueba", methodology.get("fecha_prueba")],
-        ["Fecha de emisión", datetime.now().strftime("%d-%m-%Y")],
-        ["Consultor responsable", project.get("consultor")],
-    ]
-    story.append(make_table(cover_data, col_widths=[5.2 * cm, 11.2 * cm]))
-    story.append(Spacer(1, 1.0 * cm))
-    story.append(Paragraph(f"<b>{safe_text(company.get('empresa'))}</b>", styles["CoverSubtitle"]))
-    story.append(Paragraph(safe_text(company.get("direccion")), styles["CoverSubtitle"]))
-    story.append(Paragraph(f"Celular: {safe_text(company.get('celular'))} | Correo: {safe_text(company.get('correo'))}", styles["CoverSubtitle"]))
-    story.append(PageBreak())
-
-    # -------------------------------------------------------------------------
-    # 1. INTRODUCCIÓN Y TEXTOS NARRATIVOS
-    # -------------------------------------------------------------------------
-    story.append(Paragraph("1. Introducción", styles["SectionTitle"]))
-    story.append(keep_paragraph(build_intro_text(project, capture, methodology, calculations), styles["Body"]))
-
-    story.append(Paragraph("1.1 Antecedentes generales", styles["SectionTitle"]))
-    story.append(Paragraph(
-        "La información presentada a continuación corresponde a los antecedentes declarados para la prueba "
-        "y a los datos técnicos registrados durante el ensayo. Estos antecedentes permiten contextualizar "
-        "la ubicación de la captación, su habilitación y las condiciones bajo las cuales se efectuó la medición.",
-        styles["Body"]
-    ))
-
-    story.append(Paragraph("1.2 Metodología de la prueba de bombeo", styles["SectionTitle"]))
-    story.append(keep_paragraph(build_methodology_text(project, capture, equipment, methodology, calculations), styles["Body"]))
-
-    story.append(Paragraph("1.3 Características generales de la captación", styles["SectionTitle"]))
-    story.append(keep_paragraph(build_capture_characteristics_text(capture, stratigraphy_df), styles["Body"]))
-
-    # -------------------------------------------------------------------------
-    # 2. SÍNTESIS DE ANTECEDENTES GENERALES
-    # -------------------------------------------------------------------------
-    story.append(Paragraph("2. Síntesis de antecedentes generales", styles["SectionTitle"]))
-    general_data = [
-        ["Cliente", project.get("cliente")],
-        ["Proyecto", project.get("nombre_proyecto")],
-        ["Identificación de captación", project.get("identificacion")],
-        ["Sector / Predio", project.get("sector")],
-        ["Comuna", project.get("comuna")],
-        ["Región", project.get("region")],
-        ["Consultor responsable", project.get("consultor")],
-        ["Observaciones generales", project.get("observaciones")],
-    ]
-    story.append(make_table(general_data, col_widths=[5.2 * cm, 11.2 * cm]))
-
-    # -------------------------------------------------------------------------
-    # 3. UBICACIÓN Y HABILITACIÓN
-    # -------------------------------------------------------------------------
-    story.append(Paragraph("3. Ubicación y habilitación de la captación", styles["SectionTitle"]))
-    cap_data = [
-        ["Tipo de captación", capture.get("tipo")],
-        ["Coordenada UTM Norte", capture.get("utm_norte")],
-        ["Coordenada UTM Este", capture.get("utm_este")],
-        ["Datum / Huso", f"{safe_text(capture.get('datum'))} / {safe_text(capture.get('huso'))}"],
-        ["Condición", capture.get("condicion")],
-        ["Profundidad total", fmt(capture.get("profundidad_total"), " m")],
-        ["Diámetro perforación", capture.get("diametro_perforacion")],
-        ["Diámetro entubación", capture.get("diametro_entubacion")],
-        ["Material / espesor tubería", capture.get("material_tuberia")],
-        ["Altura sobre terreno", capture.get("altura_sobre_terreno")],
-        ["Nivel estático inicial", fmt(capture.get("nivel_estatico"), " m")],
-        ["Cribas / ranuras", (f"Desde {capture.get('criba_desde')} m hasta {capture.get('criba_hasta')} m" if capture.get("criba_desde") and capture.get("criba_hasta") else "No informado")],
-        ["Tubería ciega", capture.get("tuberia_ciega")],
-        ["Profundidad de bomba", fmt(capture.get("profundidad_bomba"), " m")],
-        ["Tubería extracción/succión", capture.get("tuberia_extraccion")],
-    ]
-    story.append(make_table(cap_data, col_widths=[5.2 * cm, 11.2 * cm]))
-
-    if location_image is not None:
-        loc_flow = uploaded_image_flowable(location_image, width_cm=16.0, height_cm=9.0)
-        if loc_flow:
-            story.append(Spacer(1, 0.35 * cm))
-            story.append(loc_flow)
-            story.append(Paragraph("Figura 1. Croquis o imagen de ubicación de la captación.", styles["FigureCaption"]))
-
-    story.append(Paragraph("4. Esquema constructivo", styles["SectionTitle"]))
-    scheme_flow = uploaded_image_flowable(scheme_image, width_cm=9.0, height_cm=12.0) if scheme_image else None
-    if scheme_flow is None:
-        scheme_buf = make_simple_well_scheme(capture, stratigraphy_df)
-        if scheme_buf is not None:
-            scheme_flow = rl_image_preserve_aspect(scheme_buf, max_width_cm=8.2, max_height_cm=12.0)
-            story.append(Paragraph("Esquema referencial generado automáticamente a partir de los datos ingresados. No reemplaza plano constructivo real.", styles["Small"]))
-        else:
-            scheme_flow = Paragraph("Esquema constructivo no generado: falta profundidad total o datos mínimos de captación.", styles["Body"])
-    story.append(scheme_flow)
-    story.append(Paragraph("Figura 2. Esquema constructivo referencial de la captación.", styles["FigureCaption"]))
-
-    # -------------------------------------------------------------------------
-    # 5. ESTRATIGRAFÍA
-    # -------------------------------------------------------------------------
-    story.append(Paragraph("5. Estratigrafía", styles["SectionTitle"]))
-    story.append(Paragraph(
-        "La estratigrafía ingresada se presenta como antecedente descriptivo del material perforado o reconocido durante la habilitación.",
-        styles["Body"]
-    ))
-    story.append(df_to_pdf_table(stratigraphy_df, max_rows=35, font_size=6.4))
-
-    # -------------------------------------------------------------------------
-    # 6. EQUIPOS Y METODOLOGÍA
-    # -------------------------------------------------------------------------
-    story.append(Paragraph("6. Equipos utilizados", styles["SectionTitle"]))
-    eq_data = [
-        ["Bomba", equipment.get("bomba")],
-        ["Potencia", equipment.get("potencia")],
-        ["Tubería de extracción", capture.get("tuberia_extraccion")],
-        ["Medidor de caudal", equipment.get("medidor_caudal")],
-        ["Instrumento de nivel", equipment.get("instrumento_nivel")],
-        ["Generador", equipment.get("generador")],
-    ]
-    story.append(make_table(eq_data, col_widths=[5.2 * cm, 11.2 * cm]))
-
-    story.append(Paragraph("7. Parámetros metodológicos registrados", styles["SectionTitle"]))
-    met_data = [
-        ["Modo de prueba", methodology.get("modo_prueba")],
-        ["Fecha de prueba", methodology.get("fecha_prueba")],
-        ["Hora inicio bombeo", methodology.get("hora_inicio")],
-        ["Hora término bombeo", methodology.get("hora_termino")],
-        ["Duración registrada", fmt(calculations.get("duration_min"), " min", decimals=0)],
-        ["Caudal objetivo", methodology.get("caudal_objetivo")],
-        ["Método de medición de caudal", methodology.get("metodo_caudal")],
-        ["Método de medición de niveles", methodology.get("metodo_nivel")],
-        ["Frecuencia de medición", methodology.get("frecuencia")],
-    ]
-    story.append(make_table(met_data, col_widths=[5.2 * cm, 11.2 * cm]))
-
-    # -------------------------------------------------------------------------
-    # 8. RESULTADOS
-    # -------------------------------------------------------------------------
-    story.append(Paragraph("8. Resultados calculados", styles["SectionTitle"]))
-    results_data = [
-        ["Caudal promedio", fmt(calculations.get("q_mean"), " L/s")],
-        ["Caudal mínimo", fmt(calculations.get("q_min"), " L/s")],
-        ["Caudal máximo", fmt(calculations.get("q_max"), " L/s")],
-        ["Variación relativa de caudal", fmt(calculations.get("q_var_pct"), " %")],
-        ["Nivel estático inicial", fmt(capture.get("nivel_estatico"), " m")],
-        ["Nivel dinámico final", fmt(calculations.get("final_dynamic"), " m")],
-        ["Abatimiento final", fmt(calculations.get("drawdown"), " m")],
-        ["Caudal específico", fmt(calculations.get("specific_capacity"), " L/s/m")],
-        ["Volumen bombeado", fmt(calculations.get("volume_m3"), " m³")],
-        ["Pendiente final", fmt(calculations.get("slope_cm_h"), " cm/h")],
-        ["Evaluación estabilización", calculations.get("stabilization_message")],
-        ["Recuperación máxima", fmt(calculations.get("recovery_max"), " %")],
-        ["Tiempo a 75% recuperación", fmt(calculations.get("t75"), " min", decimals=0)],
-        ["Tiempo a 90% recuperación", fmt(calculations.get("t90"), " min", decimals=0)],
-        ["Tiempo a 100% recuperación", fmt(calculations.get("t100"), " min", decimals=0)],
-    ]
-    story.append(make_table(results_data, col_widths=[5.2 * cm, 11.2 * cm]))
-
-    # -------------------------------------------------------------------------
-    # 9. GRÁFICOS
-    # -------------------------------------------------------------------------
-    story.append(Paragraph("9. Gráficos", styles["SectionTitle"]))
-
-    pump_chart = make_line_chart_image(
-        pumping_df, "Tiempo_min", "Nivel_m",
-        "Prueba de gasto constante",
-        "Tiempo (min)", "Nivel/profundidad (m)",
-        invert_y=True
-    )
-    story.append(image_flowable(pump_chart, width_cm=18.0, height_cm=10.0))
-    story.append(Paragraph("Figura 3. Gráfico de prueba a caudal constante.", styles["FigureCaption"]))
-
-    rec_chart = make_line_chart_image(
-        recovery_df, "Tiempo_min", "Nivel_m",
-        "Prueba de recuperación",
-        "Tiempo (min)", "Nivel/profundidad (m)",
-        invert_y=True
-    )
-    story.append(image_flowable(rec_chart))
-    story.append(Paragraph("Figura 4. Gráfico de recuperación de nivel.", styles["FigureCaption"]))
-
-    if recovery_df is not None and "Recuperacion_pct" in recovery_df.columns:
-        rec_pct_chart = make_line_chart_image(
-            recovery_df, "Tiempo_min", "Recuperacion_pct",
-            "Porcentaje de recuperación",
-            "Tiempo (min)", "Recuperación (%)",
-            invert_y=False
-        )
-        story.append(image_flowable(rec_pct_chart))
-        story.append(Paragraph("Figura 5. Porcentaje de recuperación acumulada.", styles["FigureCaption"]))
-
-    # -------------------------------------------------------------------------
-    # 10. TABLAS
-    # -------------------------------------------------------------------------
-    story.append(Paragraph("10. Tabla de prueba de gasto constante", styles["SectionTitle"]))
-    story.append(df_to_pdf_table(pumping_df, max_rows=70, font_size=5.8))
-
-    story.append(Paragraph("11. Tabla de recuperación", styles["SectionTitle"]))
-    story.append(df_to_pdf_table(recovery_df, max_rows=70, font_size=5.8))
-
-    # -------------------------------------------------------------------------
-    # 12. CONCLUSIONES
-    # -------------------------------------------------------------------------
-    story.append(Paragraph("12. Conclusiones", styles["SectionTitle"]))
-    conclusions = generate_conclusions(capture, calculations, warnings, methodology.get("modo_prueba", ""))
-    for c in conclusions:
-        story.append(keep_paragraph(f"• {c}", styles["Body"]))
-
-    # Bloque de firma profesional, centrado y separado del texto final.
-    story.append(Spacer(1, 2.0 * cm))
-
-    sig_title_style = ParagraphStyle(
-        name="SignatureTitle",
-        parent=styles["Body"],
-        alignment=TA_CENTER,
-        fontName="Helvetica-Bold",
-        fontSize=11,
-        leading=16.5,
-        spaceAfter=6,
-    )
-    sig_text_style = ParagraphStyle(
-        name="SignatureText",
-        parent=styles["Body"],
-        alignment=TA_CENTER,
-        fontName="Helvetica",
-        fontSize=11,
-        leading=16.5,
-        spaceAfter=0,
-    )
-    sig_name_style = ParagraphStyle(
-        name="SignatureName",
-        parent=sig_text_style,
-        fontName="Helvetica-Bold",
-    )
-
-    if signature_image is not None:
-        sig_flow = uploaded_image_flowable(signature_image, width_cm=5.5, height_cm=2.4)
-        if sig_flow:
-            sig_table_img = Table([[sig_flow]], colWidths=[8.5 * cm])
-            sig_table_img.hAlign = "CENTER"
-            sig_table_img.setStyle(TableStyle([
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ]))
-            story.append(sig_table_img)
-
-    story.append(Paragraph("____________________________", sig_text_style))
-    story.append(Paragraph("David Gutiérrez Jara", sig_name_style))
-    story.append(Paragraph("Ingeniero Agrónomo", sig_text_style))
-
-    doc.build(story, onFirstPage=later_pages, onLaterPages=later_pages)
-    return buffer.getvalue()
-
-
-# =============================================================================
-# INTERFAZ STREAMLIT
-# =============================================================================
-
-st.title("Sistema de Pruebas de Bombeo")
-st.caption("Irrisal Consulting Ltda. | Informe técnico profesional v2.5.7 - firma limpia y saltos")
-
-if LOGO_PATH.exists():
-    st.image(str(LOGO_PATH), width=260)
-
-# =============================================================================
-# GUARDAR / CARGAR FICHAS DE DATOS
-# =============================================================================
-
-TIPOS_CAPTACION = ["Pozo profundo", "Noria / pozo de gran diámetro", "Puntera", "Dren", "Otro"]
-CONDICIONES = ["No informado", "No surgente", "Surgente"]
-MODOS_PRUEBA = ["Ensayo abreviado 180 min + recuperación", "DGA estándar 24 h", "Otro"]
-
-def default_stratigraphy_df():
-    return pd.DataFrame({
-        "Desde_m": [0.0, 1.0, 5.0],
-        "Hasta_m": [1.0, 5.0, 12.0],
-        "Descripcion": ["Suelo vegetal", "Material fino / arcilloso", "Arena / grava / material permeable"],
-        "Observacion": ["", "", ""],
-    })
-
-
-def default_pumping_df(mode: str):
-    if "24 h" in safe_text(mode, ""):
-        default_times = [0,1,2,3,4,5,10,20,30,60,120,180,240,300,360,420,480,540,600,660,720,780,840,900,960,1020,1080,1140,1200,1260,1320,1380,1440]
-    else:
-        default_times = [0,1,2,3,4,5,10,15,20,30,45,60,90,120,150,180]
-    return pd.DataFrame({
-        "Fecha": [""] * len(default_times),
-        "Hora": [""] * len(default_times),
-        "Tiempo_min": default_times,
-        "Nivel_m": [np.nan] * len(default_times),
-        "Caudal_L_s": [np.nan] * len(default_times),
-        "Observacion": [""] * len(default_times),
-    })
-
-
-def default_recovery_df():
-    default_rec_times = [0,1,2,3,4,5,10,15,20,30,45,60,90,120,150,180]
-    return pd.DataFrame({
-        "Fecha": [""] * len(default_rec_times),
-        "Hora": [""] * len(default_rec_times),
-        "Tiempo_min": default_rec_times,
-        "Nivel_m": [np.nan] * len(default_rec_times),
-        "Observacion": [""] * len(default_rec_times),
-    })
-
-
-def init_state_defaults():
-    defaults = {
-        "company_empresa": COMPANY_DEFAULTS["empresa"],
-        "company_direccion": COMPANY_DEFAULTS["direccion"],
-        "company_celular": COMPANY_DEFAULTS["celular"],
-        "company_correo": COMPANY_DEFAULTS["correo"],
-        "project_nombre_proyecto": "Prueba de bombeo",
-        "project_identificacion": "Captación subterránea",
-        "project_cliente": "",
-        "project_sector": "",
-        "project_comuna": "",
-        "project_region": "Región del Biobío",
-        "project_consultor": "",
-        "project_observaciones": "",
-        "capture_tipo": "Pozo profundo",
-        "capture_condicion": "No informado",
-        "capture_utm_norte": "",
-        "capture_utm_este": "",
-        "capture_datum": "SIRGAS WGS84 / WGS84",
-        "capture_huso": "18S",
-        "capture_profundidad_total": 0.0,
-        "capture_diametro_perforacion": "",
-        "capture_diametro_entubacion": "",
-        "capture_material_tuberia": "",
-        "capture_altura_sobre_terreno": "",
-        "capture_nivel_estatico": 0.0,
-        "capture_criba_desde": 0.0,
-        "capture_criba_hasta": 0.0,
-        "capture_tuberia_ciega": "",
-        "capture_profundidad_bomba": 0.0,
-        "capture_tuberia_extraccion": "",
-        "capture_observaciones": "",
-        "equipment_bomba": "",
-        "equipment_potencia": "",
-        "equipment_medidor_caudal": "",
-        "equipment_instrumento_nivel": "",
-        "equipment_generador": "",
-        "equipment_observaciones": "",
-        "methodology_modo_prueba": "Ensayo abreviado 180 min + recuperación",
-        "methodology_fecha_prueba": datetime.now().strftime("%d-%m-%Y"),
-        "methodology_hora_inicio": "",
-        "methodology_hora_termino": "",
-        "methodology_caudal_objetivo": "",
-        "methodology_metodo_caudal": "Caudalímetro",
-        "methodology_metodo_nivel": "Pozómetro",
-        "methodology_frecuencia": "",
-        "methodology_observaciones": "",
-        "data_version": 0,
-    }
-    for key, value in defaults.items():
-        st.session_state.setdefault(key, value)
-    st.session_state.setdefault("strat_df_loaded", default_stratigraphy_df())
-    st.session_state.setdefault("pumping_df_loaded", None)
-    st.session_state.setdefault("recovery_df_loaded", None)
-
-
-def coerce_state_number(key: str, default: float = 0.0):
+def _normalize_export_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Normaliza campos antes de exportar y calcula valores derivados."""
+    out = dict(data or {})
+
+    # Si el caudal viene como texto en otra clave, rescatarlo.
+    if to_float(out.get("caudal_l_s"), 0) <= 0:
+        for key in ["caudal", "caudal_solicitado", "caudal_lts_seg", "caudal_l/s"]:
+            if out.get(key):
+                out["caudal_l_s"] = to_float(out.get(key), 0)
+                break
+
+    # Calcular volumen anual si hay caudal y el volumen está vacío/cero.
+    if to_float(out.get("caudal_l_s"), 0) > 0 and to_float(out.get("volumen_anual_m3"), 0) <= 0:
+        out["volumen_anual_m3"] = round(update_volume_from_flow(out.get("caudal_l_s")), 1)
+
+    # Intentar extraer coordenadas desde la descripción si los campos directos están vacíos.
+    if not clean_text(out.get("utm_norte")) or not clean_text(out.get("utm_este")):
+        text_blob = " ".join([clean_text(out.get("descripcion_ubicacion")), clean_text(out.get("descripcion_proyecto")), clean_text(out.get("informacion_adicional"))])
+        north, east = parse_coordinates(text_blob)
+        if north and east:
+            out["utm_norte"] = north
+            out["utm_este"] = east
+
+    # Normalizar coordenadas si el usuario las ingresó con puntos de miles.
+    if clean_text(out.get("utm_norte")):
+        out["utm_norte"] = re.sub(r"[^0-9]", "", clean_text(out.get("utm_norte")))
+    if clean_text(out.get("utm_este")):
+        out["utm_este"] = re.sub(r"[^0-9]", "", clean_text(out.get("utm_este")))
+
+    out["region"] = _region_text(out.get("region"))
+    out["predio"] = _clean_predio_value(out.get("predio"))
+    out["conservador"] = _clean_conservador_value(out.get("conservador"))
+    return out
+
+
+def force_peticionario_empresa(data: dict[str, Any]) -> dict[str, Any]:
     """
-    Evita errores de Streamlit cuando una ficha guardada trae valores numéricos
-    como texto, vacío, None o 'No informado'.
+    Fuerza que el punto 1 del formulario DGA identifique a Irrisal Consulting Ltda.
+    como peticionario. No altera los datos prediales/productivos del beneficiario.
     """
-    value = st.session_state.get(key, default)
-    try:
-        if value is None:
-            raise ValueError
-        if isinstance(value, str):
-            cleaned = value.strip().replace(",", ".")
-            if cleaned == "" or cleaned.lower() in ["no informado", "dato no informado", "none", "nan"]:
-                raise ValueError
-            value = cleaned
-        value = float(value)
-        if pd.isna(value):
-            raise ValueError
-        st.session_state[key] = value
-    except Exception:
-        st.session_state[key] = float(default)
+    out = dict(data or {})
+    out.update(PETICIONARIO_EMPRESA)
+    out["firmante_nombre"] = PETICIONARIO_EMPRESA["nombre"]
+    out["firmante_rut"] = PETICIONARIO_EMPRESA["rut"]
+    return out
 
 
-def normalize_numeric_state_fields():
+def make_pdf(data: dict[str, Any], signature_file=None, croquis_file=None) -> bytes:
+    data = force_peticionario_empresa(data)
+    data = _normalize_export_data(data)
     """
-    Normaliza todos los campos numéricos antes de construir widgets number_input.
+    Exporta PDF usando el formulario oficial DGA como plantilla.
+    Versión 2.3: coordenadas recalibradas y páginas aplicables a riego + subsistencia.
     """
-    coerce_state_number("capture_profundidad_total", 0.0)
-    coerce_state_number("capture_nivel_estatico", 0.0)
-    coerce_state_number("capture_criba_desde", 0.0)
-    coerce_state_number("capture_criba_hasta", 0.0)
-    coerce_state_number("capture_profundidad_bomba", 0.0)
+    if not TEMPLATE_DGA_PDF.exists():
+        raise FileNotFoundError("No se encontró la plantilla PDF oficial en assets.")
+
+    # Limpieza y normalización previa
+    data = dict(data or {})
+    data["region"] = _region_text(data.get("region"))
+    data["predio"] = _clean_predio_value(data.get("predio"))
+    data["conservador"] = _clean_conservador_value(data.get("conservador"))
+    if not clean_text(data.get("descripcion_proyecto")):
+        data["descripcion_proyecto"] = _build_project_description(data)
+    if not clean_text(data.get("descripcion_ubicacion")) or "antecedentes técnicos" in clean_text(data.get("descripcion_ubicacion")).lower():
+        data["descripcion_ubicacion"] = _build_location_description(data)
+    if not clean_text(data.get("informacion_adicional")) or clean_text(data.get("informacion_adicional")).startswith("Se adjuntan antecedentes"):
+        data["informacion_adicional"] = _build_additional_info(data)
+
+    src = fitz.open(str(TEMPLATE_DGA_PDF))
+    out = fitz.open()
+    # Páginas: 1, 2, 3, 4, 5 y 10. Se omiten páginas de usos no aplicables.
+    out.insert_pdf(src, from_page=0, to_page=4)
+    out.insert_pdf(src, from_page=9, to_page=9)
+
+    # =========================
+    # PAGE 1
+    # =========================
+    p = out[0]
+
+    # 1. Identificación peticionario: Irrisal Consulting Ltda.
+    _mark_box(p, 528, 444, 556, 467, 12)  # Persona jurídica
+    _pdf_text(p, 165, 486, 385, 16, PETICIONARIO_EMPRESA["nombre"], size=7.8)
+    _pdf_text(p, 225, 508, 325, 22, PETICIONARIO_EMPRESA["domicilio"], size=7.6)
+    _pdf_text(p, 122, 537, 150, 15, PETICIONARIO_EMPRESA["rut"], size=7.8)
+    _pdf_text(p, 316, 537, 235, 15, PETICIONARIO_EMPRESA["fono"], size=7.8)
+    _pdf_text(p, 170, 558, 380, 15, PETICIONARIO_EMPRESA["correo"], size=7.8)
+
+    # 2.1 Naturaleza: subterránea
+    _mark_box(p, 379, 653, 422, 674, 12)
+
+    # =========================
+    # PAGE 2
+    # =========================
+    p = out[1]
+
+    # 2.2 Tipo y ejercicio: consuntivo, permanente, continuo
+    _mark_box(p, 216, 119, 245, 142, 12)   # Consuntivo
+    _mark_box(p, 336, 119, 366, 142, 12)   # Permanente
+    _mark_box(p, 529, 119, 556, 142, 12)   # Continuo
+
+    # 2.3 Caudal solicitado
+    _pdf_text(p, 50, 340, 142, 18, fmt_num_blank(data.get("caudal_l_s"), 2), size=8.2, align=1)
+    _mark_box(p, 343, 316, 373, 338, 12)  # Lts/seg
+    _pdf_text(p, 210, 399, 130, 16, fmt_num_blank(data.get("volumen_anual_m3"), 1), size=8.2, align=1)
+
+    # 2.4 Captación - coordenadas con un dígito por casilla.
+    _pdf_digits_in_boxes(p, 110.5, 576.5, 19.1, 22.0, data.get("utm_norte"), 7, size=9.0)
+    _pdf_digits_in_boxes(p, 244.0, 576.5, 19.2, 22.0, data.get("utm_este"), 6, size=9.0)
+    _pdf_text(p, 362, 576.5, 190, 22, data.get("datum_huso"), size=7.4, align=1)
+    _pdf_lines(p, 116, 708, 438, 132, _build_location_description(data), size=7.2)
+
+    # =========================
+    # PAGE 3
+    # =========================
+    p = out[2]
+
+    # 3.1 Breve descripción del proyecto: dentro de las líneas, sin invadir instrucciones.
+    _pdf_lines(p, 106, 245, 430, 135, _build_project_description(data), size=7.1)
+
+    # 3.2 Derechos asociados: se marca NO en ambos casos.
+    _mark_box(p, 287, 432, 316, 461, 12)  # NO constituidos
+    _mark_box(p, 528, 432, 557, 461, 12)  # NO en trámite
+
+    # =========================
+    # PAGE 4
+    # =========================
+    p = out[3]
+
+    # 3.3 Uso del agua: uso doméstico de subsistencia y riego.
+    uso = clean_text(data.get("uso_agua"), USOS_OPCIONES[0]).lower()
+    if "subsistencia" in uso or to_float(data.get("porcentaje_subsistencia"), 0) > 0:
+        _mark_box(p, 514, 328, 571, 356, 12)
+    _mark_box(p, 514, 392, 571, 420, 12)  # Riego
+    # No se escribe nota aquí para no alterar el formato; va en información adicional.
+
+    # =========================
+    # PAGE 5
+    # =========================
+    p = out[4]
+
+    # Redibujar 4.2 y 4.3 con tablas calibradas.
+    _draw_custom_42_43(p, data)
+
+    # =========================
+    # PAGE 6 = original PAGE 10
+    # =========================
+    p = out[5]
+    _pdf_write_on_ruled_lines(p, 62, 96.5, 488, _build_additional_info(data), size=7.0, max_lines=10, chars_per_line=118, line_gap=18.0)
+    _add_signature_to_pdf_page(p, signature_file, data)
+
+    pdf_bytes = out.tobytes(deflate=True, garbage=4)
+    out.close()
+    src.close()
+    return pdf_bytes
 
 
+# =============================================================================
+# UI
+# =============================================================================
 
-def records_to_df(records, fallback_df):
-    if isinstance(records, list) and records:
-        return pd.DataFrame(records)
-    return fallback_df
+init_state()
 
-
-def apply_payload_to_state(payload: dict):
-    sections = {
-        "company": "company",
-        "project": "project",
-        "capture": "capture",
-        "equipment": "equipment",
-        "methodology": "methodology",
-    }
-    for section_name, prefix in sections.items():
-        values = payload.get(section_name, {})
-        if isinstance(values, dict):
-            for field, value in values.items():
-                st.session_state[f"{prefix}_{field}"] = value
-
-    if st.session_state.get("capture_tipo") not in TIPOS_CAPTACION:
-        st.session_state["capture_tipo"] = TIPOS_CAPTACION[0]
-    if st.session_state.get("capture_condicion") not in CONDICIONES:
-        st.session_state["capture_condicion"] = CONDICIONES[0]
-    if st.session_state.get("methodology_modo_prueba") not in MODOS_PRUEBA:
-        st.session_state["methodology_modo_prueba"] = MODOS_PRUEBA[0]
-
-    normalize_numeric_state_fields()
-
-    # Tablas editables
-    st.session_state["strat_df_loaded"] = records_to_df(payload.get("stratigraphy"), default_stratigraphy_df())
-    st.session_state["pumping_df_loaded"] = records_to_df(payload.get("pumping"), default_pumping_df(st.session_state.get("methodology_modo_prueba", "")))
-    st.session_state["recovery_df_loaded"] = records_to_df(payload.get("recovery"), default_recovery_df())
-    st.session_state["data_version"] = int(st.session_state.get("data_version", 0)) + 1
-
-
-def df_to_records_for_json(df: pd.DataFrame):
-    if df is None or df.empty:
-        return []
-    clean = df.copy()
-    clean = clean.replace({np.nan: None})
-    return clean.to_dict("records")
-
-
-def build_payload(company, project, capture, equipment, methodology, stratigraphy_df, pumping_df, recovery_df):
-    return {
-        "version": "2.5",
-        "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "company": company,
-        "project": project,
-        "capture": capture,
-        "equipment": equipment,
-        "methodology": methodology,
-        "stratigraphy": df_to_records_for_json(stratigraphy_df),
-        "pumping": df_to_records_for_json(pumping_df),
-        "recovery": df_to_records_for_json(recovery_df),
-    }
-
-
-init_state_defaults()
-normalize_numeric_state_fields()
+st.title("Memoria Explicativa DGA - Diferentes usos")
+st.caption(APP_VERSION)
+st.info("Aplicación enfocada en solicitudes de aguas subterráneas para riego, con porcentaje opcional para uso doméstico de subsistencia. No considera derechos constituidos ni solicitudes en trámite asociadas al proyecto.")
 
 with st.sidebar:
-    st.header("Cargar ficha guardada")
-    saved_json = st.file_uploader("Subir ficha de datos (.json)", type=["json"], key="saved_json_loader")
-    if st.button("Aplicar datos guardados"):
-        if saved_json is None:
-            st.warning("Primero sube una ficha .json guardada.")
-        else:
-            try:
-                payload = json.loads(saved_json.getvalue().decode("utf-8"))
-                apply_payload_to_state(payload)
-                st.success("Datos cargados. La app se actualizará con la ficha guardada.")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"No se pudo cargar la ficha: {exc}")
+    st.header("Autocompletar")
+    if st.session_state.get("informe_autocomplete_msg"):
+        st.success("Datos autocompletados desde el informe técnico. Revisa antes de exportar.")
+        with st.expander("Ver datos detectados del informe"):
+            st.json(st.session_state.get("informe_autocomplete_msg"))
+        if st.button("Ocultar datos del informe"):
+            st.session_state["informe_autocomplete_msg"] = None
+            st.rerun()
 
-    st.divider()
-    st.header("Configuración empresa")
-    empresa = st.text_input("Empresa", key="company_empresa")
-    direccion = st.text_area("Dirección", key="company_direccion")
-    celular = st.text_input("Celular", key="company_celular")
-    correo = st.text_input("Correo", key="company_correo")
-    st.caption("Estos datos se insertan automáticamente en portada y pie de página.")
-
-    st.header("Firma")
-    signature_image = st.file_uploader(
-        "Subir firma en PNG",
-        type=["png"],
-        key="signature_image"
+    informe_upload = st.file_uploader(
+        "Subir informe técnico BLA (Word, PDF, JPG o PNG)",
+        type=["docx", "pdf", "jpg", "jpeg", "png"],
+        key="informe_bla_upload",
     )
-    st.caption("La firma se insertará al final del Word y PDF. Por seguridad, la firma no se guarda dentro de la ficha JSON.")
+    manual_informe_text = st.text_area(
+        "Texto pegado del informe BLA, opcional",
+        key="manual_informe_text",
+        help="Úsalo si las coordenadas UTM o el caudal no se detectan desde el archivo.",
+    )
 
-company = {"empresa": empresa, "direccion": direccion, "celular": celular, "correo": correo}
+    if st.button("Autocompletar desde informe técnico"):
+        try:
+            extracted = {}
+            debug_text = ""
+            if informe_upload is not None:
+                name = (informe_upload.name or "").lower()
+                if name.endswith(".docx"):
+                    extracted.update(parse_informe_bla(informe_upload))
+                    # segundo pase directo sobre el texto completo del Word
+                    try:
+                        lines_tmp = docx_to_lines(informe_upload)
+                        debug_text = "\n".join(lines_tmp)
+                        extracted.update(parse_direct_bla_text(debug_text))
+                    except Exception:
+                        pass
+                else:
+                    debug_text = uploaded_file_to_text_any(informe_upload)
+                    extracted.update(parse_direct_bla_text(debug_text))
 
-tabs = st.tabs([
-    "1. Proyecto",
-    "2. Captación",
-    "3. Estratigrafía",
-    "4. Equipos y metodología",
-    "5. Bombeo",
-    "6. Recuperación",
-    "7. Resultados e informe",
-])
+            if manual_informe_text.strip():
+                extracted.update(parse_direct_bla_text(manual_informe_text.strip()))
+
+            if extracted:
+                apply_data(extracted)
+                st.session_state["informe_autocomplete_msg"] = extracted
+                st.rerun()
+            else:
+                st.warning("No se detectaron datos útiles. Pega el texto del informe o completa manualmente UTM Norte, UTM Este y caudal.")
+                if debug_text:
+                    with st.expander("Ver texto leído del informe"):
+                        st.text(debug_text[:5000])
+        except Exception as e:
+            st.error(f"No se pudo leer el informe: {e}")
+
+    st.header("Autocompletar predio")
+    if st.session_state.get("predio_autocomplete_msg"):
+        st.success("Datos del predio autocompletados. Revisa y corrige antes de exportar.")
+        with st.expander("Ver datos detectados del predio"):
+            st.json(st.session_state.get("predio_autocomplete_msg"))
+        if st.button("Ocultar datos detectados"):
+            st.session_state["predio_autocomplete_msg"] = None
+            st.rerun()
+    avaluo_upload = st.file_uploader(
+        "Subir avalúo fiscal SII (PDF, JPG o PNG)",
+        type=["pdf", "jpg", "jpeg", "png"],
+        key="avaluo_upload",
+    )
+    cbr_upload = st.file_uploader(
+        "Subir inscripción Conservador Bienes Raíces (PDF, JPG o PNG)",
+        type=["pdf", "jpg", "jpeg", "png"],
+        key="cbr_upload",
+    )
+
+    manual_avaluo_text = st.text_area(
+        "Texto pegado del avalúo fiscal, opcional",
+        key="manual_avaluo_text",
+        help="Úsalo si el PDF o imagen no se lee bien. Puedes copiar y pegar el texto del certificado.",
+    )
+    manual_cbr_text = st.text_area(
+        "Texto pegado de la inscripción CBR, opcional",
+        key="manual_cbr_text",
+        help="Úsalo si el OCR no detecta fojas, número, año o conservador.",
+    )
+
+    if st.button("Autocompletar datos del predio"):
+        detected_predio = {}
+        debug_texts = {}
+        try:
+            if avaluo_upload is not None:
+                txt_avaluo = uploaded_file_to_text_any(avaluo_upload)
+                debug_texts["texto_avaluo_detectado"] = txt_avaluo[:3000]
+                detected_predio.update(parse_avaluo_fiscal(avaluo_upload))
+
+            if cbr_upload is not None:
+                txt_cbr = uploaded_file_to_text_any(cbr_upload)
+                debug_texts["texto_cbr_detectado"] = txt_cbr[:3000]
+                detected_predio.update(parse_conservador(cbr_upload))
+
+            if manual_avaluo_text.strip():
+                txt = manual_avaluo_text.strip()
+                detected_predio.update({
+                    k: v for k, v in {
+                        "rol_sii": find_rol_sii(txt),
+                        "comuna": find_comuna_from_text(txt),
+                        "predio": find_predio_from_avaluo(txt),
+                        "hectareas_riego": find_surface_ha(txt),
+                    }.items() if v not in [None, ""]
+                })
+
+            if manual_cbr_text.strip():
+                detected_predio.update(find_cbr_data(manual_cbr_text.strip()))
+
+            if detected_predio:
+                apply_data(detected_predio)
+                st.session_state["predio_autocomplete_msg"] = detected_predio
+                st.rerun()
+                if debug_texts:
+                    with st.expander("Ver texto leído por OCR / PDF"):
+                        st.write(debug_texts)
+            else:
+                st.warning("No se detectaron datos útiles. Prueba pegando el texto en los campos opcionales o ingrésalos manualmente.")
+                if debug_texts:
+                    with st.expander("Ver texto leído por OCR / PDF"):
+                        st.write(debug_texts)
+        except Exception as e:
+            st.error(f"No se pudo leer el avalúo o inscripción: {e}")
+
+    st.header("Firma y croquis")
+    firma = st.file_uploader("Subir firma en PNG", type=["png"], key="firma_file")
+    croquis = st.file_uploader("Subir croquis/mapa opcional", type=["png", "jpg", "jpeg"], key="croquis_file")
+
+    st.header("Guardar/Cargar")
+    ficha_upload = st.file_uploader("Cargar ficha JSON", type=["json"])
+    if ficha_upload is not None and st.button("Aplicar ficha JSON"):
+        try:
+            payload = json.loads(ficha_upload.getvalue().decode("utf-8"))
+            apply_data(payload)
+            st.success("Ficha cargada.")
+        except Exception as e:
+            st.error(f"No se pudo cargar la ficha: {e}")
+
+# Top controls
+with st.expander("Criterios fijos de esta versión", expanded=False):
+    st.write("- Naturaleza: aguas subterráneas.")
+    st.write("- Tipo de derecho: consuntivo.")
+    st.write("- Ejercicio: permanente y continuo.")
+    st.write("- No existen otros derechos constituidos asociados al proyecto.")
+    st.write("- No existen otros derechos en trámite asociados al proyecto.")
+    st.write("- Usos habilitados: riego y uso doméstico de subsistencia.")
+
+# UI tabs
+tabs = st.tabs(["1. Peticionario", "2. Derecho solicitado", "3. Proyecto y usos", "4. Riego/Subsistencia", "5. Exportar"])
 
 with tabs[0]:
-    st.subheader("Datos del proyecto")
-    col1, col2 = st.columns(2)
-    with col1:
-        nombre_proyecto = st.text_input("Nombre del proyecto", key="project_nombre_proyecto")
-        identificacion = st.text_input("Identificación de captación", key="project_identificacion")
-        cliente = st.text_input("Cliente / beneficiario", key="project_cliente")
-        sector = st.text_input("Sector / predio", key="project_sector")
-    with col2:
-        comuna = st.text_input("Comuna", key="project_comuna")
-        region = st.text_input("Región", key="project_region")
-        consultor = st.text_input("Consultor responsable", key="project_consultor")
-        observaciones_proyecto = st.text_area("Observaciones generales", key="project_observaciones")
-
-    project = {
-        "nombre_proyecto": nombre_proyecto,
-        "identificacion": identificacion,
-        "cliente": cliente,
-        "sector": sector,
-        "comuna": comuna,
-        "region": region,
-        "consultor": consultor,
-        "observaciones": observaciones_proyecto,
-    }
+    st.subheader("1. Identificación del peticionario")
+    st.info("Este bloque se completa con los datos de Irrisal Consulting Ltda. El beneficiario del BLA se usa para los antecedentes del proyecto/predio.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.selectbox("Tipo de persona", ["Persona natural", "Persona jurídica"], key="tipo_persona")
+        if st.session_state.tipo_persona == "Persona natural":
+            st.selectbox("Sexo", ["F", "M"], key="sexo")
+        st.text_input("Nombre o Razón Social", key="nombre")
+        st.text_input("RUT", key="rut")
+    with c2:
+        st.text_area("Domicilio", key="domicilio")
+        st.text_input("Fono", key="fono")
+        st.text_input("Correo electrónico", key="correo")
+        st.text_input("Nombre firmante", key="firmante_nombre")
+        st.text_input("RUT firmante", key="firmante_rut")
 
 with tabs[1]:
-    st.subheader("Captación, ubicación y habilitación")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        tipo = st.selectbox("Tipo de captación", TIPOS_CAPTACION, key="capture_tipo")
-        condicion = st.selectbox("Condición", CONDICIONES, key="capture_condicion")
-        utm_norte = st.text_input("UTM Norte", key="capture_utm_norte")
-        utm_este = st.text_input("UTM Este", key="capture_utm_este")
-        datum = st.text_input("Datum", key="capture_datum")
-        huso = st.text_input("Huso", key="capture_huso")
-
-    with col2:
-        profundidad_total = st.number_input("Profundidad total (m)", min_value=0.0, step=0.1, key="capture_profundidad_total")
-        diametro_perforacion = st.text_input("Diámetro perforación", key="capture_diametro_perforacion")
-        diametro_entubacion = st.text_input("Diámetro entubación", key="capture_diametro_entubacion")
-        material_tuberia = st.text_input("Material / espesor tubería", key="capture_material_tuberia")
-        altura_sobre_terreno = st.text_input("Altura tubería sobre terreno", key="capture_altura_sobre_terreno")
-        nivel_estatico = st.number_input("Nivel estático inicial (m)", min_value=-50.0, step=0.01, key="capture_nivel_estatico")
-
-    with col3:
-        st.caption("Si no tienes información de cribas o tramo filtrante, deja estos campos en 0.")
-        criba_desde = st.number_input("Criba desde (m)", min_value=0.0, step=0.1, key="capture_criba_desde")
-        criba_hasta = st.number_input("Criba hasta (m)", min_value=0.0, step=0.1, key="capture_criba_hasta")
-        tuberia_ciega = st.text_input("Tramos tubería ciega", key="capture_tuberia_ciega")
-        profundidad_bomba = st.number_input("Profundidad bomba (m)", min_value=0.0, step=0.1, key="capture_profundidad_bomba")
-        tuberia_extraccion = st.text_input("Tubería extracción/succión", key="capture_tuberia_extraccion")
-        observaciones_captacion = st.text_area("Observaciones de habilitación", key="capture_observaciones")
-
-    st.write("#### Imágenes opcionales")
-    location_image = st.file_uploader("Cargar croquis o imagen de ubicación", type=["jpg", "jpeg", "png"], key="location_image")
-    scheme_image = st.file_uploader("Cargar esquema constructivo del pozo/captación", type=["jpg", "jpeg", "png"], key="scheme_image")
-
-    capture = {
-        "tipo": tipo,
-        "condicion": condicion,
-        "utm_norte": utm_norte,
-        "utm_este": utm_este,
-        "datum": datum,
-        "huso": huso,
-        "profundidad_total": profundidad_total if profundidad_total > 0 else None,
-        "diametro_perforacion": diametro_perforacion,
-        "diametro_entubacion": diametro_entubacion,
-        "material_tuberia": material_tuberia,
-        "altura_sobre_terreno": altura_sobre_terreno,
-        "nivel_estatico": nivel_estatico,
-        "criba_desde": criba_desde if criba_desde > 0 else "",
-        "criba_hasta": criba_hasta if criba_hasta > 0 else "",
-        "tuberia_ciega": tuberia_ciega,
-        "profundidad_bomba": profundidad_bomba if profundidad_bomba > 0 else None,
-        "tuberia_extraccion": tuberia_extraccion,
-        "observaciones": observaciones_captacion,
-    }
+    st.subheader("2. Derecho de aprovechamiento solicitado")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.text_input("Naturaleza", key="naturaleza", disabled=True)
+        st.text_input("Tipo de derecho", key="tipo_derecho", disabled=True)
+        st.text_input("Ejercicio 1", key="ejercicio_1", disabled=True)
+        st.text_input("Ejercicio 2", key="ejercicio_2", disabled=True)
+    with c2:
+        st.number_input("Caudal solicitado (L/s)", min_value=0.0, step=0.01, key="caudal_l_s")
+        if st.button("Calcular volumen anual desde caudal continuo"):
+            st.session_state.volumen_anual_m3 = round(update_volume_from_flow(st.session_state.caudal_l_s), 1)
+        st.number_input("Volumen anual (m3/año)", min_value=0.0, step=100.0, key="volumen_anual_m3")
+    with c3:
+        st.text_input("UTM Norte", key="utm_norte")
+        st.text_input("UTM Este", key="utm_este")
+        st.text_input("Datum y Huso", key="datum_huso")
+    st.text_area("Descripción complementaria de ubicación", key="descripcion_ubicacion", height=110)
 
 with tabs[2]:
-    st.subheader("Estratigrafía")
-    st.info("Ingresa los tramos reconocidos/perforados. Esta tabla se incluirá en el informe.")
-    stratigraphy_df = st.data_editor(
-        st.session_state.get("strat_df_loaded", default_stratigraphy_df()),
-        num_rows="dynamic",
-        use_container_width=True,
-        key=f"strat_editor_{st.session_state.get('data_version', 0)}",
-    )
+    st.subheader("3. Proyecto y usos del agua")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.text_area("Breve descripción del proyecto", key="descripcion_proyecto", height=180)
+        st.selectbox("Uso del agua", USOS_OPCIONES, key="uso_agua")
+    with c2:
+        st.number_input("Porcentaje riego (%)", min_value=0.0, max_value=100.0, step=1.0, key="porcentaje_riego")
+        st.number_input("Porcentaje subsistencia (%)", min_value=0.0, max_value=100.0, step=1.0, key="porcentaje_subsistencia")
+        total_pct = st.session_state.porcentaje_riego + st.session_state.porcentaje_subsistencia
+        if abs(total_pct - 100) > 0.01:
+            st.warning(f"Los porcentajes suman {total_pct:.1f}%. Para DGA conviene que sumen 100%.")
+        else:
+            st.success("Los porcentajes suman 100%.")
+    st.info("Los derechos asociados al proyecto se marcarán automáticamente como NO: sin derechos constituidos y sin derechos en trámite.")
 
 with tabs[3]:
-    st.subheader("Equipos utilizados y metodología")
-    col1, col2 = st.columns(2)
-    with col1:
-        bomba = st.text_input("Bomba: tipo/marca/modelo", key="equipment_bomba")
-        potencia = st.text_input("Potencia", key="equipment_potencia")
-        medidor_caudal = st.text_input("Medidor de caudal", key="equipment_medidor_caudal")
-        instrumento_nivel = st.text_input("Instrumento de medición de nivel", key="equipment_instrumento_nivel")
-        generador = st.text_input("Generador / fuente eléctrica", key="equipment_generador")
-        observaciones_equipos = st.text_area("Observaciones de equipos", key="equipment_observaciones")
-
-    with col2:
-        modo_prueba = st.selectbox("Modo de prueba", MODOS_PRUEBA, key="methodology_modo_prueba")
-        fecha_prueba = st.text_input("Fecha de prueba", key="methodology_fecha_prueba")
-        hora_inicio = st.text_input("Hora inicio bombeo", key="methodology_hora_inicio")
-        hora_termino = st.text_input("Hora término bombeo", key="methodology_hora_termino")
-        caudal_objetivo = st.text_input("Caudal objetivo", key="methodology_caudal_objetivo")
-        metodo_caudal = st.text_input("Método medición caudal", key="methodology_metodo_caudal")
-        metodo_nivel = st.text_input("Método medición niveles", key="methodology_metodo_nivel")
-        frecuencia = st.text_input("Frecuencia de medición", key="methodology_frecuencia")
-        observaciones_metodologia = st.text_area("Observaciones metodológicas", key="methodology_observaciones")
-
-    equipment = {
-        "bomba": bomba,
-        "potencia": potencia,
-        "medidor_caudal": medidor_caudal,
-        "instrumento_nivel": instrumento_nivel,
-        "generador": generador,
-        "observaciones": observaciones_equipos,
-    }
-
-    methodology = {
-        "modo_prueba": modo_prueba,
-        "fecha_prueba": fecha_prueba,
-        "hora_inicio": hora_inicio,
-        "hora_termino": hora_termino,
-        "caudal_objetivo": caudal_objetivo,
-        "metodo_caudal": metodo_caudal,
-        "metodo_nivel": metodo_nivel,
-        "frecuencia": frecuencia,
-        "observaciones": observaciones_metodologia,
-    }
+    st.subheader("4.2 Uso doméstico de subsistencia y 4.3 riego")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.text_input("Región", key="region")
+        st.text_input("Provincia", key="provincia")
+        st.text_input("Comuna", key="comuna")
+        st.number_input("N° personas beneficiadas", min_value=0, step=1, key="personas_beneficiadas")
+    with c2:
+        st.text_input("Nombre del predio beneficiado", key="predio")
+        st.text_input("N° Rol SII", key="rol_sii")
+        st.number_input("N° hectáreas a regar", min_value=0.0, step=0.1, key="hectareas_riego")
+    with c3:
+        st.text_input("Fojas", key="fojas")
+        st.text_input("Número inscripción", key="numero_inscripcion")
+        st.text_input("Año inscripción", key="anio_inscripcion")
+        st.text_input("Conservador", key="conservador")
+    st.text_area("Información adicional", key="informacion_adicional", height=100)
 
 with tabs[4]:
-    st.subheader("Prueba de gasto constante")
-    st.warning("El sistema no rellena datos faltantes. Solo calcula con datos ingresados/importados.")
-    pumping_base = st.session_state.get("pumping_df_loaded")
-    if pumping_base is None:
-        pumping_base = default_pumping_df(st.session_state.get("methodology_modo_prueba", ""))
-    pumping_df = st.data_editor(
-        pumping_base,
-        num_rows="dynamic",
-        use_container_width=True,
-        key=f"pumping_editor_{st.session_state.get('data_version', 0)}",
-    )
+    st.subheader("Exportar")
+    st.info("La exportación usa como fondo la plantilla oficial DGA. El PDF mantiene el formato idéntico; el Word se genera como páginas-imagen para conservar la apariencia exacta.")
+    data = get_data()
+    st.write("Revisa la vista de datos antes de exportar.")
+    with st.expander("Vista de datos"):
+        st.json(data)
 
-with tabs[5]:
-    st.subheader("Prueba de recuperación")
-    recovery_base = st.session_state.get("recovery_df_loaded")
-    if recovery_base is None:
-        recovery_base = default_recovery_df()
-    recovery_df = st.data_editor(
-        recovery_base,
-        num_rows="dynamic",
-        use_container_width=True,
-        key=f"recovery_editor_{st.session_state.get('data_version', 0)}",
-    )
+    ficha_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    st.download_button("Guardar ficha JSON", data=ficha_bytes, file_name="ficha_memoria_dga.json", mime="application/json")
 
-with tabs[6]:
-    st.subheader("Resultados, gráficos e informe")
-
-    calculations, recovery_with_pct = build_calculations(pumping_df, recovery_df, nivel_estatico)
-
-    warnings = []
-    add_warning(warnings, tipo == "Pozo profundo" and calculations.get("duration_min") is not None and calculations.get("duration_min") < 1440,
-                "Pozo profundo con duración menor a 24 horas: no declarar cumplimiento formal de prueba estándar de 24 h.")
-    add_warning(warnings, tipo == "Puntera" and "piez" not in safe_text(instrumento_nivel, "").lower(),
-                "En punteras, el control de niveles debe efectuarse en piezómetro habilitado.")
-    add_warning(warnings, not utm_norte or not utm_este, "Faltan coordenadas UTM.")
-    add_warning(warnings, calculations.get("stabilization_evaluable") is False, calculations.get("stabilization_message"))
-    add_warning(warnings, calculations.get("is_constant") is False, "El caudal no se mantuvo constante dentro de la tolerancia definida.")
-    add_warning(warnings, calculations.get("recovery_max") is not None and calculations.get("recovery_max") < 75, "Recuperación inferior a 75%; interpretación limitada.")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Duración", fmt(calculations.get("duration_min"), " min", decimals=0))
-    c2.metric("Caudal promedio", fmt(calculations.get("q_mean"), " L/s"))
-    c3.metric("Abatimiento", fmt(calculations.get("drawdown"), " m"))
-    c4.metric("Caudal específico", fmt(calculations.get("specific_capacity"), " L/s/m"))
-
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Volumen bombeado", fmt(calculations.get("volume_m3"), " m³"))
-    c6.metric("Pendiente final", fmt(calculations.get("slope_cm_h"), " cm/h"))
-    c7.metric("Recuperación máxima", fmt(calculations.get("recovery_max"), " %"))
-    c8.metric("Tiempo 90%", fmt(calculations.get("t90"), " min", decimals=0))
-
-    st.write("### Evaluación de estabilización")
-    if calculations.get("stabilization_meets"):
-        st.success(calculations.get("stabilization_message"))
-    elif calculations.get("stabilization_evaluable"):
-        st.error(calculations.get("stabilization_message"))
-    else:
-        st.warning(calculations.get("stabilization_message"))
-
-    st.write("### Advertencias técnicas internas")
-    st.caption("Estas advertencias se muestran en la app para control técnico, pero no se incluyen como sección en el Word/PDF.")
-    if warnings:
-        for w in warnings:
-            st.warning(w)
-    else:
-        st.success("Sin advertencias críticas con los datos ingresados.")
-
-    st.write("### Gráficos")
-    g1, g2 = st.columns(2)
-
-    pump_valid = df_numeric(pumping_df, ["Tiempo_min", "Nivel_m"]).dropna(subset=["Tiempo_min", "Nivel_m"])
-    rec_valid = df_numeric(recovery_with_pct, ["Tiempo_min", "Nivel_m"]).dropna(subset=["Tiempo_min", "Nivel_m"])
-
-    with g1:
-        if len(pump_valid) >= 2:
-            fig1 = px.line(
-                pump_valid.sort_values("Tiempo_min"), x="Tiempo_min", y="Nivel_m", markers=True,
-                title="Nivel/profundidad vs tiempo de bombeo",
-                labels={"Tiempo_min": "Tiempo (min)", "Nivel_m": "Nivel/profundidad (m)"}
-            )
-            fig1.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig1, use_container_width=True)
-        else:
-            st.info("No hay suficientes datos para gráfico de bombeo.")
-
-    with g2:
-        if len(rec_valid) >= 2:
-            fig2 = px.line(
-                rec_valid.sort_values("Tiempo_min"), x="Tiempo_min", y="Nivel_m", markers=True,
-                title="Nivel/profundidad vs tiempo de recuperación",
-                labels={"Tiempo_min": "Tiempo (min)", "Nivel_m": "Nivel/profundidad (m)"}
-            )
-            fig2.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("No hay suficientes datos para gráfico de recuperación.")
-
-    st.write("### Guardar ficha de datos")
-    st.caption("Descarga esta ficha .json para recuperar la información después de actualizar la app o para reutilizar datos del mismo usuario/captación.")
-    payload = build_payload(company, project, capture, equipment, methodology, stratigraphy_df, pumping_df, recovery_df)
-    json_bytes = json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8")
-    ficha_name = safe_text(project.get("cliente"), "ficha").lower().replace(" ", "_")
-    st.download_button(
-        "Guardar ficha de datos (.json)",
-        data=json_bytes,
-        file_name=f"ficha_prueba_bombeo_{ficha_name}.json",
-        mime="application/json",
-    )
-
-    st.write("### Exportar informe")
-
-    word_bytes = make_word_docx(
-        company=company,
-        project=project,
-        capture=capture,
-        stratigraphy_df=stratigraphy_df,
-        equipment=equipment,
-        methodology=methodology,
-        pumping_df=pumping_df,
-        recovery_df=recovery_with_pct,
-        calculations=calculations,
-        warnings=warnings,
-        location_image=location_image,
-        scheme_image=scheme_image,
-        signature_image=signature_image,
-    )
-
-    col_word, col_pdf = st.columns(2)
-
-    with col_word:
-        st.download_button(
-            "Descargar informe Word (.docx)",
-            data=word_bytes,
-            file_name="informe_prueba_bombeo.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
-
-    pdf_bytes = make_pdf(
-        company=company,
-        project=project,
-        capture=capture,
-        stratigraphy_df=stratigraphy_df,
-        equipment=equipment,
-        methodology=methodology,
-        pumping_df=pumping_df,
-        recovery_df=recovery_with_pct,
-        calculations=calculations,
-        warnings=warnings,
-        location_image=location_image,
-        scheme_image=scheme_image,
-        signature_image=signature_image,
-    )
-
-    with col_pdf:
-        st.download_button(
-            "Descargar informe PDF (.pdf)",
-            data=pdf_bytes,
-            file_name="informe_prueba_bombeo.pdf",
-            mime="application/pdf",
-        )
+    c1, c2 = st.columns(2)
+    with c1:
+        try:
+            docx_bytes = make_docx(data, signature_file=firma, croquis_file=croquis)
+            st.download_button("Descargar Word (.docx)", data=docx_bytes, file_name="memoria_explicativa_dga.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        except Exception as e:
+            st.error(f"Error generando Word: {e}")
+    with c2:
+        try:
+            pdf_bytes = make_pdf(data, signature_file=firma, croquis_file=croquis)
+            st.download_button("Descargar PDF (.pdf)", data=pdf_bytes, file_name="memoria_explicativa_dga.pdf", mime="application/pdf")
+        except Exception as e:
+            st.error(f"Error generando PDF: {e}")

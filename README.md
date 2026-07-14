@@ -1,21 +1,22 @@
-# Sistema de Pruebas de Bombeo - Irrisal Consulting Ltda.
+# Memoria Explicativa DGA - Riego
 
-Versión 2: informe PDF profesional.
+Aplicación Streamlit para completar automáticamente una memoria explicativa DGA para solicitudes de derechos de aprovechamiento de aguas subterráneas destinadas a riego, con porcentaje opcional para uso doméstico de subsistencia.
 
-## Mejoras principales
+## Funciones
 
-- Portada más profesional.
-- Datos institucionales en portada y pie de página.
-- Sección de ubicación y habilitación.
-- Campos de cribas, tubería ciega, profundidad de bomba y tubería de extracción.
-- Estratigrafía editable.
-- Equipos y metodología.
-- Gráficos insertados en PDF.
-- Tabla de gasto constante.
-- Tabla de recuperación.
-- Conclusiones automáticas más cuidadosas.
-- Recomendaciones automáticas.
-- Exportación Excel ampliada.
+- Exporta Word (.docx).
+- Exporta PDF (.pdf).
+- Autocompleta datos desde un informe técnico BLA en Word (.docx).
+- Permite cargar firma digital PNG.
+- Permite cargar croquis/mapa opcional.
+- Guarda y carga ficha JSON.
+- Considera por defecto:
+  - aguas subterráneas;
+  - derecho consuntivo;
+  - ejercicio permanente y continuo;
+  - sin derechos constituidos asociados;
+  - sin derechos en trámite asociados;
+  - uso riego y uso doméstico de subsistencia.
 
 ## Ejecutar localmente
 
@@ -24,124 +25,152 @@ pip install -r requirements.txt
 streamlit run app/main.py
 ```
 
-## Nota técnica
 
-El sistema no rellena datos faltantes ni presenta valores estimados como medidos.
+## Versión 1.1 - autocompletado corregido
 
-
-## Versión 2.2 - mejoras de formato
-
-- Logo pequeño en el encabezado de todas las páginas.
-- Logo de portada sin deformación.
-- Imágenes subidas al informe con proporción conservada.
-- Croquis/ubicación sin achatamiento.
-- Gráficos insertados sin deformación.
-- Márgenes ajustados para encabezado y pie de página.
+- Corrige extractor de informes Word BLA.
+- Ya no toma frases narrativas como nombre del solicitante.
+- Prioriza campos estructurados: Solicitante, RUT, Domicilio, Comuna, Provincia, Teléfono, Correo, Coordenadas, Datum, Huso y Caudal solicitado.
+- Corrige firmante para que use el nombre y RUT reales detectados.
 
 
-## Versión 2.3 - exportación Word y PDF
+## Versión 1.2 - autocompletar predio desde avalúo fiscal y Conservador
 
-- Se elimina la exportación Excel de la interfaz.
-- Se agrega exportación Word editable (.docx).
-- Se mantiene exportación PDF formal.
-- Ambos informes incluyen datos del proyecto, captación, estratigrafía, equipos, metodología, resultados, gráficos, tablas, advertencias, conclusiones y recomendaciones.
-
-
-## Versión 2.4 - formato de exportación
-
-- Cuerpo de informe en Arial 11 e interlineado 1,5 en Word.
-- Títulos desde Introducción en Arial 13.
-- PDF con tamaño de cuerpo equivalente y mejor ajuste de tablas.
-- Tabla de resultados con texto largo ajustable.
-- Porcentaje de recuperación con dos decimales.
-- Se elimina la sección Advertencias técnicas del Word y PDF exportados.
-- Gráfico de prueba constante más grande.
+- Agrega cargador para Avalúo Fiscal SII en PDF, JPG o PNG.
+- Agrega cargador para inscripción del Conservador de Bienes Raíces en PDF, JPG o PNG.
+- Intenta detectar Rol SII, comuna, predio, superficie, fojas, número, año y conservador.
+- Agrega OCR mediante Tesseract para documentos escaneados.
+- Actualiza Dockerfile para instalar tesseract-ocr y tesseract-ocr-spa.
 
 
-## Versión 2.4.1 - gráfico Word
+## Versión 1.3 - lectura de predio mejorada
 
-- Aumenta el tamaño del gráfico de prueba constante solo en la exportación Word.
-- Mantiene el PDF sin cambios.
-- Ajusta levemente los márgenes laterales del Word para evitar recorte del gráfico.
-
-
-## Versión 2.4.2 - firma profesional
-
-- Agrega cargador de firma PNG en la barra lateral.
-- Word y PDF muestran solo una firma al final.
-- Elimina firma del beneficiario/cliente.
-- Inserta la firma del profesional si se sube imagen PNG.
-- Texto final: David Gutiérrez Jara, Ingeniero Agrónomo.
+- Mejora extracción de fojas, número, año y conservador desde inscripciones CBR.
+- Agrega campos opcionales para pegar texto del avalúo fiscal o inscripción CBR si el OCR falla.
+- Agrega visualización del texto detectado para diagnosticar documentos escaneados.
+- Mantiene soporte para PDF, JPG y PNG.
 
 
-## Versión 2.5 - guardar y cargar datos
+## Versión 1.4 - predio autocompletado corregido
 
-- Agrega guardado de ficha de datos en formato JSON.
-- Permite cargar una ficha JSON para autocompletar empresa, proyecto, captación, equipos, metodología, estratigrafía, bombeo y recuperación.
-- La ficha sirve para recuperar información después de actualizar la aplicación.
-- Por seguridad, la imagen de firma no se guarda dentro de la ficha JSON; debe subirse nuevamente si se requiere insertar en informes.
-
-
-## Versión 2.5.1 - texto justificado y títulos no huérfanos
-
-- Justifica el texto del cuerpo en Word.
-- Justifica el texto del cuerpo en PDF.
-- Mantiene los títulos junto al contenido siguiente en Word.
-- Mantiene los títulos junto al contenido siguiente en PDF mediante keepWithNext.
-- Evita que títulos como Introducción, Resultados, Conclusiones o Recomendaciones queden solos al final de una página.
+- Corrige el mapeo interno de campos del avalúo y Conservador.
+- Ahora los datos detectados se aplican correctamente a:
+  - rol_sii
+  - fojas
+  - numero_inscripcion
+  - anio_inscripcion
+  - conservador
+- Fuerza actualización visual inmediata después de autocompletar datos del predio.
 
 
-## Versión 2.5.2 - metodología narrativa y antecedentes fluidos
+## Versión 1.5 - coordenadas UTM corregidas
 
-- Automatiza una introducción más narrativa.
-- Agrega sección 1.1 Antecedentes generales.
-- Agrega sección 1.2 Metodología de la prueba de bombeo con texto generado según datos reales de la prueba.
-- Agrega sección 1.3 Características generales de la captación en texto continuo, sin tabla.
-- Mantiene las tablas como síntesis técnica posterior.
-- Renombra la antigua tabla de metodología como Parámetros metodológicos registrados para evitar duplicidad.
-
-
-## Versión 2.5.3 - corrección de campos numéricos
-
-- Corrige error de Streamlit cuando una ficha guardada trae campos numéricos como texto.
-- Normaliza profundidad total, nivel estático, cribas y profundidad de bomba antes de crear los widgets.
-- Si criba desde/hasta viene vacía o como 'No informado', la app la transforma en 0.0.
-- Mantiene la metodología narrativa de la versión 2.5.2.
+- Mejora detección de coordenadas desde informes BLA.
+- Soporta formatos como:
+  - Huso 18, coordenadas 753.811 m E, 5.821.082 m S
+  - Este 753.811 m y Norte 5.821.082 m
+  - UTM Este / UTM Norte
+- Aplica automáticamente los valores a UTM Norte, UTM Este y Datum/Huso.
 
 
-## Versión 2.5.4 - sin recomendaciones y tablas más limpias
+## Versión 2.0 - formato oficial DGA exacto
 
-- Elimina la sección Recomendaciones del Word y PDF.
-- En Parámetros metodológicos registrados elimina la fila Observaciones metodológicas.
-- En Equipos utilizados elimina la fila Observaciones.
-- En Ubicación y habilitación de la captación elimina la fila Observaciones.
-- Mantiene los textos narrativos, conclusiones y firma profesional.
-
-
-## Versión 2.5.5 - esquema constructivo profesional
-
-- Mejora el esquema constructivo automático.
-- Agrega escala de profundidad.
-- Integra estratigrafía lateral cuando existen tramos ingresados.
-- Diferencia perforación, entubación, columna de agua y nivel estático.
-- Representa bomba y cribas solo si están informadas.
-- Si no hay cribas o bomba, declara 'No informado' en el esquema.
-- Mejora etiquetas, líneas guía y presentación visual para Word y PDF.
+- El PDF se genera usando como fondo el formulario oficial DGA cargado en assets.
+- Se conservan tamaño de página, tablas, líneas, cuadros, tipografías y distribución del formulario original.
+- La app solo estampa los datos sobre los espacios del formulario.
+- Se exportan las páginas 1 a 10 del formulario, excluyendo las instrucciones.
+- El Word se genera como páginas-imagen a partir del PDF completado para conservar apariencia idéntica.
+- Nota: el Word prioriza fidelidad visual; su contenido no queda editable como texto.
 
 
-## Versión 2.5.6 - firma centrada y más estética
+## Versión 2.1 - formulario oficial calibrado
 
-- Centra el bloque de firma en Word y PDF.
-- Separa más la firma del texto final del informe.
-- Centra la imagen PNG de la firma.
-- Mantiene solo la firma de David Gutiérrez Jara, Ingeniero Agrónomo.
-- Elimina apariencia de tabla visible en la firma final.
+- Corrige coordenadas de escritura sobre la plantilla oficial DGA.
+- Ajusta marcas X para que calcen dentro de los casilleros.
+- Completa correctamente identificación del peticionario.
+- Completa naturaleza, tipo/ejercicio, caudal, volumen anual y captación.
+- Agrega descripción complementaria referencial de ubicación.
+- Completa 3.1 con resumen del proyecto desde el informe BLA.
+- Marca NO en derechos constituidos y NO en derechos en trámite.
+- Marca correctamente riego y uso doméstico de subsistencia.
+- Exporta solo páginas aplicables: 1 a 5 y página de información adicional/firma.
+- En 4.2 y 4.3 muestra la región por nombre, no por número.
+- Genera información adicional relacionada con el proyecto si el campo está vacío.
 
 
-## Versión 2.5.7 - firma limpia y control de saltos
+## Versión 2.2 - peticionario Irrisal
 
-- Elimina el texto 'Firma del profesional responsable'.
-- Mantiene solo imagen/línea/nombre/profesión en la firma final.
-- Refuerza en Word que los títulos se mantengan con su contenido.
-- Refuerza en Word que los párrafos no se partan dejando una línea huérfana.
-- Refuerza en PDF que los párrafos narrativos se mantengan juntos cuando sea posible.
+- El punto 1 Identificación del peticionario se completa siempre con:
+  - Irrisal Consulting Ltda.
+  - San Martín 553 oficina 901
+  - RUT 78.271.963-7
+  - +56 9 6796 0884
+  - Irrisalconsulting@gmail.com
+- El autocompletado desde informe BLA ya no reemplaza esos datos con el beneficiario.
+- Los datos del beneficiario se conservan solo como antecedente del proyecto/predio.
+
+
+## Versión 2.2.1 - corrección peticionario Irrisal
+
+- Corrige error NameError: PETICIONARIO_EMPRESA is not defined.
+- Define los datos de Irrisal Consulting Ltda. antes de DEFAULTS.
+- Mantiene el punto 1 del formulario con los datos de la empresa.
+
+
+## Versión 2.3 - corrección integral formulario DGA
+
+- Recalibra las marcas X de 2.1, 2.2, 2.3, 3.2 y 3.3.
+- Corrige ubicación de textos en 2.4, 3.1, 4.2, 4.3 y 5.
+- El punto 1 usa siempre los datos de Irrisal Consulting Ltda. como peticionario.
+- Región se exporta como nombre (Biobío) y no como número ni frase larga.
+- Limpia el campo Conservador para eliminar frases de certificación del documento CBR.
+- La descripción de ubicación incluye coordenadas, comuna, predio y tipo de captación si existen.
+- Información adicional se genera vinculada al proyecto, caudal, superficie, riego, subsistencia y antecedentes adjuntos.
+
+
+## Versión 2.4 - ajuste fino formulario DGA
+
+- Corrige posición de UTM Norte, UTM Este y Datum/Huso en 2.4.
+- Corrige posición de volumen anual en 2.3.
+- Ajusta 4.2 y 4.3 para que región/provincia/comuna, predio, rol, hectáreas, fojas, número, año y conservador caigan en sus celdas.
+- Si falta caudal o volumen, no exporta 0,00 como dato válido; deja el espacio en blanco.
+- Mejora autocompletado de caudal y coordenadas desde informe BLA.
+
+
+## Versión 2.5 - firma calibrada
+
+- Reubica la firma PNG dentro del espacio oficial de firma, centrada sobre la línea.
+- Elimina el texto adicional bajo la línea de firma para evitar que aparezca fuera del espacio asignado.
+- Ajusta el bloque de información adicional para que no invada la zona de firma.
+- Mantiene la exportación con plantilla oficial DGA.
+
+
+## Versión 2.6 - UTM desde informe reforzado
+
+- El autocompletado del informe técnico ahora acepta Word, PDF, JPG y PNG.
+- Agrega campo para pegar texto del informe si el archivo no se lee bien.
+- Refuerza la detección de UTM Norte y UTM Este desde frases como:
+  - coordenadas 753.811 m E, 5.821.082 m S
+  - Este 753.811 m y Norte 5.821.082 m
+  - UTM Este / UTM Norte
+- Normaliza coordenadas ingresadas con puntos de miles antes de exportar.
+
+
+## Versión 2.7 - UTM por casillas y secciones 4.2/4.3 calibradas
+
+- En el punto 2.4, UTM Norte y UTM Este se escriben con un dígito por casilla.
+- Redibuja las secciones 4.2 y 4.3 para evitar descalces al omitir usos no aplicables.
+- Corrige ubicación de Región, Provincia, Comuna, Predio, Rol SII, Hectáreas, Fojas, Número, Año y Conservador.
+- Mantiene el formulario enfocado en uso doméstico de subsistencia y riego.
+
+
+## Versión 2.8 - punto 4 limpio, UTM calibradas e información adicional alineada
+
+- Ajusta la escritura de UTM Norte y UTM Este para que cada dígito caiga dentro de su casilla.
+- Mueve Datum/Huso al espacio correcto del punto de captación.
+- Elimina visualmente el bloque 4.1 Agua Potable en la exportación, dejando solo 4.2 y 4.3.
+- Agrega títulos visibles para 4.2 y 4.3.
+- Redibuja tablas 4.2 y 4.3 con posiciones calibradas.
+- Alinea el texto del punto 5 con las líneas del formulario oficial.
+- Mejora posición de textos en el punto 1 Identificación del peticionario.
+- Evita frases con caudal o hectáreas en cero cuando el dato no está disponible.
