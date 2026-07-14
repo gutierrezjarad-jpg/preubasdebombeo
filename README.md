@@ -174,3 +174,14 @@ streamlit run app/main.py
 - Alinea el texto del punto 5 con las líneas del formulario oficial.
 - Mejora posición de textos en el punto 1 Identificación del peticionario.
 - Evita frases con caudal o hectáreas en cero cuando el dato no está disponible.
+
+
+## Versión 2.9 - corrección real empaquetada en raíz
+
+- Este ZIP está empaquetado con app/, assets/, requirements.txt, Dockerfile y README.md en la raíz.
+- Corrige que el usuario suba una carpeta anidada por error.
+- Elimina visualmente 4.1 Agua Potable en la exportación.
+- Mantiene solo 4.2 y 4.3 con títulos visibles.
+- Escribe coordenadas UTM por casillas.
+- Alinea información adicional con las líneas del formulario.
+- Mejora posición de datos del peticionario.
