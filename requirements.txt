@@ -1,8 +1,8 @@
 streamlit
 pandas
-python-docx
+numpy
+plotly
+openpyxl
 reportlab
-
-PyMuPDF
-pytesseract
-Pillow
+matplotlib
+python-docx
