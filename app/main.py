@@ -44,7 +44,7 @@ from reportlab.platypus import (
 
 st.set_page_config(page_title="Memoria Explicativa DGA - Riego", layout="wide")
 
-APP_VERSION = "v2.9 - corrección aplicada punto 4, UTM y alineación"
+APP_VERSION = "v2.7 - UTM por casillas y secciones 4.2/4.3 calibradas"
 
 PETICIONARIO_EMPRESA = {
     "tipo_persona": "Persona jurídica",
@@ -1041,11 +1041,10 @@ def _pdf_text(page, x, y, w, h, value, size=8.5, bold=False, align=0):
 def _coord_digits(value: Any, n_boxes: int) -> str:
     """
     Normaliza coordenadas UTM para escribir un dígito por casilla.
-    Corrige casos como 5869412.0, 5.869.412, 747711.0 o 747.711.
+    Corrige casos como 5869412.0, 5.869.412 o 747.711.
     """
     if value is None:
         return ""
-
     if isinstance(value, (int, float)):
         try:
             raw = str(int(float(value)))
@@ -1053,7 +1052,6 @@ def _coord_digits(value: Any, n_boxes: int) -> str:
             raw = ""
     else:
         s = clean_text(value)
-        # caso: "5869412.0"
         m = re.match(r"^\s*([0-9]+)(?:\.0+)?\s*$", s)
         if m:
             raw = m.group(1)
@@ -1062,14 +1060,11 @@ def _coord_digits(value: Any, n_boxes: int) -> str:
 
     if not raw:
         return ""
-
-    # Si por un decimal .0 quedó un dígito extra, eliminarlo.
+    # Quitar falso decimal .0 capturado como un cero extra
     if len(raw) == n_boxes + 1 and raw.endswith("0"):
         raw = raw[:-1]
-
     if len(raw) > n_boxes:
         raw = raw[-n_boxes:]
-
     return raw.rjust(n_boxes)
 
 
@@ -1127,17 +1122,17 @@ def _pdf_label(page, x0, y0, x1, y1, text_value, size=8.0, bold=False, align=1):
 
 def _draw_custom_42_43(page, data: dict[str, Any]):
     """
-    Redibuja la página 5 del formulario dejando solo los usos aplicables:
-    4.2 uso doméstico de subsistencia y 4.3 riego.
-    El bloque 4.1 Agua Potable queda eliminado visualmente.
+    Redibuja la página 4 solo con los puntos aplicables: 4.2 y 4.3.
+    Se elimina visualmente el bloque 4.1 Agua Potable, porque estos expedientes
+    son de riego + uso doméstico de subsistencia.
     """
-    # Limpiar toda la zona del punto 4 original, incluyendo 4.1.
+    # Limpiar toda el área del punto 4 original, manteniendo solo margen y número de página.
     page.draw_rect(fitz.Rect(0, 45, 612, 875), color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
 
     region = _region_text(data.get("region"))
     provincia = clean_text(data.get("provincia")) or "Biobío"
     comuna = clean_text(data.get("comuna")).title()
-    predio = _clean_predio_value(data.get("predio")).title()
+    predio = _clean_predio_value(data.get("predio"))
     rol = clean_text(data.get("rol_sii"))
     has = fmt_num_blank(data.get("hectareas_riego"), 2)
     personas = fmt_num(data.get("personas_beneficiadas"), 0)
@@ -1150,12 +1145,12 @@ def _draw_custom_42_43(page, data: dict[str, Any]):
 
     # Título general del punto 4
     _pdf_label(page, 46, 58, 560, 78, "4. Antecedentes complementarios del proyecto", size=13, bold=True, align=0)
-    _pdf_label(page, 46, 76, 560, 94, "(complete según el o los usos del derecho de agua requerido por el proyecto, de acuerdo a lo señalado en el numeral 3.3.)", size=7.4, align=0)
+    _pdf_label(page, 46, 76, 560, 93, "(complete según el o los usos del derecho de agua requerido por el proyecto, de acuerdo a lo señalado en el numeral 3.3.)", size=7.4, align=0)
 
     # ===== 4.2 =====
-    _pdf_label(page, 58, 116, 560, 138, "4.2. Antecedentes requeridos para uso Doméstico de Subsistencia", size=12, bold=True, align=0)
+    _pdf_label(page, 58, 115, 560, 136, "4.2. Antecedentes requeridos para uso Doméstico de Subsistencia", size=12, bold=True, align=0)
 
-    x0, y0, x1 = 70, 160, 545
+    x0, y0, x1 = 70, 158, 545
     left_w = 93
     col_w = (x1 - x0 - left_w) / 3
     y_header = y0 + 22
@@ -1164,17 +1159,15 @@ def _draw_custom_42_43(page, data: dict[str, Any]):
 
     _pdf_draw_cell(page, x0, y0, x0 + left_w, y_values, fill=None)
     _pdf_label(page, x0 + 3, y0 + 14, x0 + left_w - 3, y_values - 6, "Antecedentes\nde ubicación", size=8.3, bold=True, align=1)
-
     for i, lab in enumerate(["Región", "Provincia", "Comuna"]):
         xa = x0 + left_w + i * col_w
         xb = xa + col_w
         _pdf_draw_cell(page, xa, y0, xb, y_header, fill=gray)
         _pdf_label(page, xa, y0 + 4, xb, y_header - 2, lab, size=8.2, bold=True)
         _pdf_draw_cell(page, xa, y_header, xb, y_values, fill=None)
-
     _pdf_cell_text(page, x0 + left_w, y_header + 9, x0 + left_w + col_w, y_values - 3, region, size=7.4)
-    _pdf_cell_text(page, x0 + left_w + col_w, y_header + 9, x0 + left_w + 2 * col_w, y_values - 3, provincia, size=7.4)
-    _pdf_cell_text(page, x0 + left_w + 2 * col_w, y_header + 9, x1, y_values - 3, comuna, size=7.4)
+    _pdf_cell_text(page, x0 + left_w + col_w, y_header + 9, x0 + left_w + 2*col_w, y_values - 3, provincia, size=7.4)
+    _pdf_cell_text(page, x0 + left_w + 2*col_w, y_header + 9, x1, y_values - 3, comuna, size=7.4)
 
     _pdf_draw_cell(page, x0, y_values, x0 + left_w, y_bottom, fill=None)
     _pdf_label(page, x0 + 3, y_values + 12, x0 + left_w - 3, y_bottom - 6, "Antecedentes\nrequeridos", size=8.3, bold=True)
@@ -1184,9 +1177,9 @@ def _draw_custom_42_43(page, data: dict[str, Any]):
     _pdf_cell_text(page, x1 - 125, y_values + 18, x1, y_bottom - 4, personas, size=8.2)
 
     # ===== 4.3 =====
-    _pdf_label(page, 58, 306, 560, 328, "4.3. Antecedentes requeridos para uso en Riego", size=12, bold=True, align=0)
+    _pdf_label(page, 58, 305, 560, 326, "4.3. Antecedentes requeridos para uso en Riego", size=12, bold=True, align=0)
 
-    x0, y0, x1 = 70, 352, 545
+    x0, y0, x1 = 70, 350, 545
     left_w = 93
     col_w = (x1 - x0 - left_w) / 3
     y_header = y0 + 22
@@ -1207,8 +1200,8 @@ def _draw_custom_42_43(page, data: dict[str, Any]):
         _pdf_draw_cell(page, xa, y_header, xb, y_values, fill=None)
 
     _pdf_cell_text(page, x0 + left_w, y_header + 9, x0 + left_w + col_w, y_values - 3, region, size=7.4)
-    _pdf_cell_text(page, x0 + left_w + col_w, y_header + 9, x0 + left_w + 2 * col_w, y_values - 3, provincia, size=7.4)
-    _pdf_cell_text(page, x0 + left_w + 2 * col_w, y_header + 9, x1, y_values - 3, comuna, size=7.4)
+    _pdf_cell_text(page, x0 + left_w + col_w, y_header + 9, x0 + left_w + 2*col_w, y_values - 3, provincia, size=7.4)
+    _pdf_cell_text(page, x0 + left_w + 2*col_w, y_header + 9, x1, y_values - 3, comuna, size=7.4)
 
     _pdf_draw_cell(page, x0 + left_w, y_predio_label, x1, y_predio_value, fill=gray)
     _pdf_label(page, x0 + left_w + 5, y_predio_label + 5, x1 - 5, y_predio_value - 3, "Nombre del predio beneficiado", size=7.8, bold=True, align=0)
@@ -1219,7 +1212,6 @@ def _draw_custom_42_43(page, data: dict[str, Any]):
     _pdf_label(page, x0 + left_w + 4, y_rol + 9, x0 + left_w + 72, y_bottom - 4, "N° Rol SII", size=7.8, bold=True)
     _pdf_draw_cell(page, x0 + left_w + 72, y_rol, x0 + left_w + 230, y_bottom, fill=None)
     _pdf_cell_text(page, x0 + left_w + 72, y_rol + 9, x0 + left_w + 230, y_bottom - 4, rol, size=7.6)
-
     _pdf_draw_cell(page, x0 + left_w + 230, y_rol, x0 + left_w + 330, y_bottom, fill=gray)
     _pdf_label(page, x0 + left_w + 230, y_rol + 9, x0 + left_w + 330, y_bottom - 4, "N° Hás a regar", size=7.8, bold=True)
     _pdf_draw_cell(page, x0 + left_w + 330, y_rol, x1, y_bottom, fill=None)
@@ -1231,7 +1223,6 @@ def _draw_custom_42_43(page, data: dict[str, Any]):
     y2 = y1 + 34
     y3 = y2 + 34
     y4 = y3 + 34
-
     x_left = 70
     x_label = 230
     x_val = 330
@@ -1239,7 +1230,6 @@ def _draw_custom_42_43(page, data: dict[str, Any]):
 
     _pdf_draw_cell(page, x_left, y0, x_label, y4, fill=None)
     _pdf_label(page, x_left + 3, y0 + 42, x_label - 3, y4 - 35, "Antecedentes legales del\npredio", size=8.3, bold=True)
-
     _pdf_draw_cell(page, x_label, y0, x_cons, y1, fill=gray)
     _pdf_label(page, x_label, y0 + 6, x_cons, y1 - 2, "Inscripción del predio en Conservador de Bienes Raíces", size=8.2, bold=True)
 
@@ -1511,7 +1501,6 @@ init_state()
 st.title("Memoria Explicativa DGA - Diferentes usos")
 st.caption(APP_VERSION)
 st.info("Aplicación enfocada en solicitudes de aguas subterráneas para riego, con porcentaje opcional para uso doméstico de subsistencia. No considera derechos constituidos ni solicitudes en trámite asociadas al proyecto.")
-st.success("Versión activa: v2.9 - punto 4 limpio, UTM por casillas e información adicional alineada")
 
 with st.sidebar:
     st.header("Autocompletar")
@@ -1740,7 +1729,6 @@ with tabs[3]:
 
 with tabs[4]:
     st.subheader("Exportar")
-    st.warning("Antes de exportar, confirme que arriba diga Versión activa: v2.9. Si no aparece, Cloud Run sigue usando una versión antigua.")
     st.info("La exportación usa como fondo la plantilla oficial DGA. El PDF mantiene el formato idéntico; el Word se genera como páginas-imagen para conservar la apariencia exacta.")
     data = get_data()
     st.write("Revisa la vista de datos antes de exportar.")
